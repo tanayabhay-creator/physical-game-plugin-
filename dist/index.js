@@ -116,6 +116,51 @@ function formatBytes(bytes) {
     return `${value.toFixed(digits)} ${units[idx]}`;
 }
 
+/** Steam client helpers for adding Non-Steam shortcuts in Game Mode. */
+function getSteamClient() {
+    return window.SteamClient;
+}
+async function addGameToSteam(req) {
+    try {
+        const sc = getSteamClient();
+        if (!sc?.Apps?.AddShortcut) {
+            return {
+                ok: false,
+                error: "SteamClient.Apps.AddShortcut unavailable (VDF fallback only)",
+            };
+        }
+        const appId = await sc.Apps.AddShortcut(req.game_name, req.exe, req.start_dir, req.launch_options || "");
+        const compat = (req.compat_tool || "").trim() ||
+            (req.exe.toLowerCase().endsWith(".exe") ? "proton_experimental" : "");
+        if (compat && sc.Apps.SpecifyCompatTool) {
+            try {
+                sc.Apps.SpecifyCompatTool(appId, compat);
+            }
+            catch (err) {
+                console.warn("SpecifyCompatTool failed", err);
+            }
+        }
+        if (req.should_launch) {
+            try {
+                if (sc.Apps.RunGame) {
+                    // launchSource enum value; 0 is commonly used by community plugins.
+                    sc.Apps.RunGame(String(appId), req.launch_options || "", 0, 0);
+                }
+                else if (req.vdf_launch_id) {
+                    window.open(`steam://rungameid/${req.vdf_launch_id}`, "_blank");
+                }
+            }
+            catch (err) {
+                console.warn("Auto-launch after AddShortcut failed", err);
+            }
+        }
+        return { ok: true, appId };
+    }
+    catch (err) {
+        return { ok: false, error: String(err) };
+    }
+}
+
 const getStatus = callable("get_status");
 const setAutoLaunch = callable("set_auto_launch");
 const clearLog = callable("clear_log");
@@ -314,6 +359,24 @@ function Content() {
                         }, children: logText }) }) })] }));
 }
 var index = definePlugin(() => {
+    const onAddToSteam = addEventListener("pml_add_to_steam", (payload) => {
+        void (async () => {
+            const result = await addGameToSteam(payload);
+            if (result.ok) {
+                toaster.toast({
+                    title: "Added to Steam",
+                    body: `${payload.game_name} is now in your library${result.appId ? ` (AppID ${result.appId})` : ""}`,
+                });
+            }
+            else {
+                toaster.toast({
+                    title: "Steam shortcut",
+                    body: result.error ||
+                        "SteamClient add failed — shortcuts.vdf fallback was still written.",
+                });
+            }
+        })();
+    });
     const onLaunched = addEventListener("pml_launched", (gameName, launchId) => {
         toaster.toast({
             title: "Game Launched",
@@ -332,6 +395,7 @@ var index = definePlugin(() => {
         content: SP_JSX.jsx(Content, {}),
         icon: SP_JSX.jsx(FaSdCard, {}),
         onDismount() {
+            removeEventListener("pml_add_to_steam", onAddToSteam);
             removeEventListener("pml_launched", onLaunched);
             removeEventListener("pml_error", onError);
         },

@@ -23,6 +23,7 @@ import {
   PluginStatus,
   ProgressEvent,
 } from "./types";
+import { addGameToSteam, SteamShortcutRequest } from "./steam";
 
 const getStatus = callable<[], PluginStatus>("get_status");
 const setAutoLaunch = callable<[enabled: boolean], PluginStatus>("set_auto_launch");
@@ -392,6 +393,30 @@ function Content() {
 }
 
 export default definePlugin(() => {
+  const onAddToSteam = addEventListener<[SteamShortcutRequest]>(
+    "pml_add_to_steam",
+    (payload) => {
+      void (async () => {
+        const result = await addGameToSteam(payload);
+        if (result.ok) {
+          toaster.toast({
+            title: "Added to Steam",
+            body: `${payload.game_name} is now in your library${
+              result.appId ? ` (AppID ${result.appId})` : ""
+            }`,
+          });
+        } else {
+          toaster.toast({
+            title: "Steam shortcut",
+            body:
+              result.error ||
+              "SteamClient add failed — shortcuts.vdf fallback was still written.",
+          });
+        }
+      })();
+    }
+  );
+
   const onLaunched = addEventListener<[string, number]>(
     "pml_launched",
     (gameName, launchId) => {
@@ -415,6 +440,7 @@ export default definePlugin(() => {
     content: <Content />,
     icon: <FaSdCard />,
     onDismount() {
+      removeEventListener("pml_add_to_steam", onAddToSteam);
       removeEventListener("pml_launched", onLaunched);
       removeEventListener("pml_error", onError);
     },

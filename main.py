@@ -389,7 +389,14 @@ class Plugin:
                     f"Expected executable missing after transfer: {info.destination_exe}"
                 )
 
-            await self._set_status("Registering Non-Steam shortcut...", progress=100.0)
+            await self._set_status("Adding game to Steam...", progress=100.0)
+            await self._emit_status()
+
+            should_launch = self._store.settings.auto_launch
+            if info.auto_launch is not None:
+                should_launch = info.auto_launch
+
+            # Persist into shortcuts.vdf as a durable fallback.
             shortcut = ensure_non_steam_shortcut(
                 app_name=info.game_name,
                 exe_path=str(info.destination_exe),
@@ -397,26 +404,48 @@ class Plugin:
                 launch_options=info.resolved_launch_options(),
             )
             await self._log(
-                f"{'Created' if shortcut.created else 'Found'} shortcut "
+                f"{'Created' if shortcut.created else 'Updated'} shortcuts.vdf "
                 f"appid={shortcut.appid} launch_id={shortcut.steam_launch_id}"
             )
 
-            should_launch = self._store.settings.auto_launch
-            if info.auto_launch is not None:
-                # Per-card override wins when present.
-                should_launch = info.auto_launch
+            # Live Game Mode registration via frontend SteamClient.Apps.AddShortcut.
+            steam_payload = {
+                "game_name": info.game_name,
+                "exe": str(info.destination_exe),
+                "start_dir": str(info.resolved_start_dir()),
+                "launch_options": info.resolved_launch_options(),
+                "compat_tool": info.compat_tool or "",
+                "should_launch": bool(should_launch),
+                "vdf_launch_id": shortcut.steam_launch_id,
+            }
+            await decky.emit("pml_add_to_steam", steam_payload)
+            await self._log(
+                f"Requested Steam AddShortcut for '{info.game_name}' "
+                f"({info.destination_exe})"
+            )
 
             if should_launch:
-                await self._set_status("Launching Game...", progress=100.0)
+                await self._set_status("Game added — launching...", progress=100.0)
                 await self._emit_status()
-                # Steam may need a moment to notice shortcuts.vdf changes.
-                await asyncio.sleep(1.0)
-                await launch_steam_app(shortcut.steam_launch_id)
-                await self._set_status("Game Launched", progress=100.0)
-                await notify("Physical Media Launcher", f"Launching {info.game_name}")
-                await decky.emit("pml_launched", info.game_name, shortcut.steam_launch_id)
+                await asyncio.sleep(1.5)
+                try:
+                    await launch_steam_app(shortcut.steam_launch_id)
+                    await self._set_status("Game Launched", progress=100.0)
+                    await notify("Physical Media Launcher", f"Launching {info.game_name}")
+                    await decky.emit(
+                        "pml_launched", info.game_name, shortcut.steam_launch_id
+                    )
+                except Exception as launch_exc:  # noqa: BLE001
+                    await self._log(
+                        f"URI launch fallback failed (shortcut should still exist): {launch_exc}"
+                    )
+                    await self._set_status("Added to Steam", progress=100.0)
             else:
-                await self._set_status("Ready (copy complete)", progress=100.0)
+                await self._set_status("Added to Steam", progress=100.0)
+                await notify(
+                    "Physical Media Launcher",
+                    f"{info.game_name} added to Steam library",
+                )
 
             self._handled_mounts.add(key)
             await self._emit_status()
