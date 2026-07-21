@@ -36,6 +36,11 @@ const startTransfer = callable<[mount_path: string, force_recopy: boolean], Plug
   "start_transfer"
 );
 const resetBusy = callable<[], PluginStatus>("reset_busy");
+const reportSteamAppId = callable<
+  [game_name: string, exe: string, app_id: number],
+  PluginStatus
+>("report_steam_appid");
+const launchLastGame = callable<[], PluginStatus>("launch_last_game");
 
 function Content() {
   const [state, setState] = useState<PluginStatus>(EMPTY_STATUS);
@@ -168,6 +173,22 @@ function Content() {
           body: String(err),
         });
       }
+    }
+  };
+
+  const onLaunchLast = async () => {
+    try {
+      const next = await launchLastGame();
+      setState(next);
+      toaster.toast({
+        title: "Physical Media Launcher",
+        body: next.last_error || "Launch requested for last game",
+      });
+    } catch (err) {
+      toaster.toast({
+        title: "Launch failed",
+        body: String(err),
+      });
     }
   };
 
@@ -337,6 +358,11 @@ function Content() {
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => void onLaunchLast()}>
+            Launch last game now
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => void onRescan()}>
             Rescan inserted media
           </ButtonItem>
@@ -399,10 +425,17 @@ export default definePlugin(() => {
       void (async () => {
         const result = await addGameToSteam(payload);
         if (result.ok) {
-          if (!payload.already_installed) {
+          if (result.appId) {
+            try {
+              await reportSteamAppId(payload.game_name, payload.exe, result.appId);
+            } catch (err) {
+              console.warn("report_steam_appid failed", err);
+            }
+          }
+          if (!payload.already_installed || payload.needs_add_shortcut) {
             toaster.toast({
               title: "Added to Steam",
-              body: `${payload.game_name} is now in your library${
+              body: `${payload.game_name}${
                 result.appId ? ` (AppID ${result.appId})` : ""
               }`,
             });

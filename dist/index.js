@@ -126,6 +126,7 @@ function launchViaUri(launchId) {
     try {
         if (sc?.URL?.ExecuteSteamURL) {
             sc.URL.ExecuteSteamURL(url);
+            console.log("PML ExecuteSteamURL", url);
             return;
         }
     }
@@ -133,11 +134,35 @@ function launchViaUri(launchId) {
         console.warn("ExecuteSteamURL failed", err);
     }
     try {
-        window.open(url, "_blank");
+        location.href = url;
     }
     catch (err) {
-        console.warn("window.open steam URL failed", err);
+        console.warn("location.href steam URL failed", err);
     }
+}
+function runGame(appId, launchOptions = "") {
+    const sc = getSteamClient();
+    if (!sc?.Apps?.RunGame) {
+        return false;
+    }
+    const id = String(appId);
+    // Community plugins use different param2 values (-1 or 0).
+    const attempts = [
+        [-1, 0],
+        [0, 0],
+        [-1, 1],
+    ];
+    for (const [param2, launchSource] of attempts) {
+        try {
+            sc.Apps.RunGame(id, launchOptions || "", param2, launchSource);
+            console.log("PML RunGame", id, param2, launchSource);
+            return true;
+        }
+        catch (err) {
+            console.warn("RunGame attempt failed", id, param2, err);
+        }
+    }
+    return false;
 }
 async function addGameToSteam(req) {
     try {
@@ -148,9 +173,11 @@ async function addGameToSteam(req) {
                 error: "SteamClient.Apps.AddShortcut unavailable (VDF fallback only)",
             };
         }
-        // Avoid creating duplicate shortcuts on every card reinsert.
-        if (req.already_installed) {
-            return { ok: true };
+        const shouldAdd = Boolean(req.needs_add_shortcut) ||
+            !req.already_installed ||
+            !req.steam_app_id;
+        if (!shouldAdd && req.steam_app_id) {
+            return { ok: true, appId: req.steam_app_id };
         }
         const appId = await sc.Apps.AddShortcut(req.game_name, req.exe, req.start_dir, req.launch_options || "");
         const compat = (req.compat_tool || "").trim() ||
@@ -171,21 +198,31 @@ async function addGameToSteam(req) {
 }
 async function launchSteamGame(req) {
     try {
-        const sc = getSteamClient();
-        // Prefer steam://rungameid from shortcuts.vdf — works for existing Non-Steam games.
+        let launched = false;
+        if (req.steam_app_id && req.steam_app_id !== 0) {
+            launched = runGame(req.steam_app_id, req.launch_options || "") || launched;
+        }
+        if (req.shortcut_appid && req.shortcut_appid !== 0) {
+            launched = runGame(req.shortcut_appid, req.launch_options || "") || launched;
+            // unsigned form
+            const unsigned = req.shortcut_appid >>> 0;
+            launched = runGame(unsigned, req.launch_options || "") || launched;
+        }
         if (req.vdf_launch_id) {
             launchViaUri(req.vdf_launch_id);
-            // Also try RunGame if we just created a shortcut app id in this session.
-            return { ok: true };
+            launched = true;
         }
-        if (sc?.Apps?.RunGame) {
-            // Last resort without a launch id — cannot know app id reliably here.
+        if (req.steam_app_id) {
+            launchViaUri(req.steam_app_id);
+            launched = true;
+        }
+        if (!launched) {
             return {
                 ok: false,
-                error: "No vdf_launch_id available for launch",
+                error: "No AppID available to launch. Use Start Transfer once so Steam AppID can be saved.",
             };
         }
-        return { ok: false, error: "No Steam launch method available" };
+        return { ok: true };
     }
     catch (err) {
         return { ok: false, error: String(err) };
@@ -198,6 +235,8 @@ const clearLog = callable("clear_log");
 const rescanMedia = callable("rescan_media");
 const startTransfer = callable("start_transfer");
 const resetBusy = callable("reset_busy");
+const reportSteamAppId = callable("report_steam_appid");
+const launchLastGame = callable("launch_last_game");
 function Content() {
     const [state, setState] = SP_REACT.useState(EMPTY_STATUS);
     SP_REACT.useEffect(() => {
@@ -327,6 +366,22 @@ function Content() {
             }
         }
     };
+    const onLaunchLast = async () => {
+        try {
+            const next = await launchLastGame();
+            setState(next);
+            toaster.toast({
+                title: "Physical Media Launcher",
+                body: next.last_error || "Launch requested for last game",
+            });
+        }
+        catch (err) {
+            toaster.toast({
+                title: "Launch failed",
+                body: String(err),
+            });
+        }
+    };
     const onResetBusy = async () => {
         try {
             setState(await resetBusy());
@@ -375,7 +430,7 @@ function Content() {
                                         overflow: "hidden",
                                         textOverflow: "ellipsis",
                                         whiteSpace: "nowrap",
-                                    }, children: state.progress_message }) }) })) : null] })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Transfer", description: "Press Start Transfer after a game card is detected.", children: "Idle" }) })) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Transfer", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(false), children: transferLocked ? "Transfer in progress…" : "Start Transfer (SD → SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(true), children: "Force Re-Copy (overwrite SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onRescan(), children: "Rescan inserted media" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onResetBusy(), children: "Reset stuck transfer state" }) })] }), SP_JSX.jsx(DFL.PanelSection, { title: "Auto-Launch", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Enable Auto-Launch on Insertion", description: "When ON, reinserting the SD card launches the game automatically (plugin toggle overrides game_info.json AutoLaunch).", checked: state.auto_launch, onChange: (checked) => {
+                                    }, children: state.progress_message }) }) })) : null] })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Transfer", description: "Press Start Transfer after a game card is detected.", children: "Idle" }) })) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Transfer", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(false), children: transferLocked ? "Transfer in progress…" : "Start Transfer (SD → SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(true), children: "Force Re-Copy (overwrite SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onLaunchLast(), children: "Launch last game now" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onRescan(), children: "Rescan inserted media" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onResetBusy(), children: "Reset stuck transfer state" }) })] }), SP_JSX.jsx(DFL.PanelSection, { title: "Auto-Launch", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Enable Auto-Launch on Insertion", description: "When ON, reinserting the SD card launches the game automatically (plugin toggle overrides game_info.json AutoLaunch).", checked: state.auto_launch, onChange: (checked) => {
                             void onToggleAutoLaunch(checked);
                         } }) }) }), SP_JSX.jsx(DFL.PanelSection, { title: "Actions", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onClearLog(), children: "Clear log" }) }) }), SP_JSX.jsx(DFL.PanelSection, { title: "Log", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("pre", { style: {
                             width: "100%",
@@ -394,10 +449,18 @@ var index = definePlugin(() => {
         void (async () => {
             const result = await addGameToSteam(payload);
             if (result.ok) {
-                if (!payload.already_installed) {
+                if (result.appId) {
+                    try {
+                        await reportSteamAppId(payload.game_name, payload.exe, result.appId);
+                    }
+                    catch (err) {
+                        console.warn("report_steam_appid failed", err);
+                    }
+                }
+                if (!payload.already_installed || payload.needs_add_shortcut) {
                     toaster.toast({
                         title: "Added to Steam",
-                        body: `${payload.game_name} is now in your library${result.appId ? ` (AppID ${result.appId})` : ""}`,
+                        body: `${payload.game_name}${result.appId ? ` (AppID ${result.appId})` : ""}`,
                     });
                 }
             }
