@@ -114,17 +114,52 @@ def load_game_info(mount_root: Path) -> GameInfo:
         raise GameInfoError(f"{GAME_INFO_FILENAME} not found on {mount_root}")
 
     try:
-        raw: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8-sig"))
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        raise GameInfoError(f"Cannot read {path}: {exc}") from exc
+
+    # Fix common copy/paste damage from phones / Word / WhatsApp.
+    text = (
+        text.replace("\ufeff", "")
+        .replace("“", '"')
+        .replace("”", '"')
+        .replace("‘", "'")
+        .replace("’", "'")
+        .replace("：", ":")
+        .strip()
+    )
+
+    try:
+        raw_obj = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise GameInfoError(f"Invalid JSON in {path}: {exc}") from exc
+        raise GameInfoError(
+            f"Broken JSON syntax in {path.name} at line {exc.lineno}: {exc.msg}. "
+            "Rewrite the file with the exact template (plain ASCII double quotes)."
+        ) from exc
 
-    game_name = _require_str(raw, "GameName")
-    exe_path = _require_str(raw, "ExePath").replace("\\", "/").lstrip("/")
-    target = _require_str(raw, "TargetSSDPath")
+    if not isinstance(raw_obj, dict):
+        raise GameInfoError(
+            f"{path.name} must contain a JSON object {{...}}, not {type(raw_obj).__name__}"
+        )
 
-    # If JSON was found inside a subfolder, default GameFolder to that folder
-    # unless the user already set it.
-    game_folder = str(raw.get("GameFolder") or "").replace("\\", "/").strip("/")
+    raw: Dict[str, Any] = raw_obj
+    # Allow lowercase / snake_case keys people often type by mistake.
+    normalized = {_norm_key(k): v for k, v in raw.items()}
+
+    game_name = _require_str(normalized, "gamename", aliases=("name", "title"))
+    exe_path = _require_str(
+        normalized, "exepath", aliases=("exe", "executable")
+    ).replace("\\", "/").lstrip("/")
+    target = _require_str(
+        normalized, "targetssdpath", aliases=("target", "destination", "dest")
+    )
+
+    game_folder = str(
+        normalized.get("gamefolder")
+        or normalized.get("folder")
+        or ""
+    ).replace("\\", "/").strip("/")
+
     info_parent = path.parent.resolve()
     mount_resolved = mount_root.resolve()
     if not game_folder and info_parent != mount_resolved:
@@ -133,22 +168,57 @@ def load_game_info(mount_root: Path) -> GameInfo:
         except ValueError:
             game_folder = ""
 
+    auto_raw = normalized.get("autolaunch")
+    auto_launch: Optional[bool]
+    if isinstance(auto_raw, bool):
+        auto_launch = auto_raw
+    elif isinstance(auto_raw, str) and auto_raw.strip().lower() in {"true", "false"}:
+        auto_launch = auto_raw.strip().lower() == "true"
+    else:
+        auto_launch = None
+
     return GameInfo(
         game_name=game_name,
         exe_path=exe_path,
-        launch_options=str(raw.get("LaunchOptions") or ""),
+        launch_options=str(
+            normalized.get("launchoptions") or normalized.get("launch") or ""
+        ),
         target_ssd_path=target,
         game_folder=game_folder,
-        start_dir=str(raw.get("StartDir") or "").replace("\\", "/").strip("/"),
-        compat_tool=str(raw.get("CompatTool") or raw.get("ProtonPath") or ""),
-        auto_launch=raw.get("AutoLaunch") if isinstance(raw.get("AutoLaunch"), bool) else None,
+        start_dir=str(normalized.get("startdir") or "").replace("\\", "/").strip("/"),
+        compat_tool=str(
+            normalized.get("compattool")
+            or normalized.get("protonpath")
+            or normalized.get("proton")
+            or ""
+        ),
+        auto_launch=auto_launch,
         source_root=mount_root.resolve(),
         info_path=path,
     )
 
 
-def _require_str(data: Dict[str, Any], key: str) -> str:
+def _norm_key(key: Any) -> str:
+    return str(key).strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+
+
+def _require_str(
+    data: Dict[str, Any],
+    key: str,
+    *,
+    aliases: tuple[str, ...] = (),
+) -> str:
     value = data.get(key)
+    if value is None:
+        for alias in aliases:
+            value = data.get(_norm_key(alias))
+            if value is not None:
+                break
+    if isinstance(value, (int, float)):
+        value = str(value)
     if not isinstance(value, str) or not value.strip():
-        raise GameInfoError(f"game_info.json missing required string field: {key}")
+        raise GameInfoError(
+            f"missing required field '{key}' (also accepted: {', '.join(aliases) or 'n/a'}). "
+            "Required fields: GameName, ExePath, TargetSSDPath."
+        )
     return value.strip()
