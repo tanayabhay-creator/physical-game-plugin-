@@ -21,11 +21,12 @@ PLUGIN_DIR = Path(getattr(decky, "DECKY_PLUGIN_DIR", Path(__file__).resolve().pa
 if str(PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(PLUGIN_DIR))
 
-from backend.game_info import GameInfoError, load_game_info  # noqa: E402
+from backend.game_info import GameInfoError, find_game_info, load_game_info  # noqa: E402
 from backend.launcher import launch_steam_app, notify  # noqa: E402
 from backend.media_watcher import MediaWatcher  # noqa: E402
 from backend.settings_store import SettingsStore  # noqa: E402
 from backend.shortcuts import ensure_non_steam_shortcut  # noqa: E402
+from backend.steam_paths import list_removable_mounts  # noqa: E402
 from backend.transfer import copy_game_tree, destination_ready  # noqa: E402
 
 logger = logging.getLogger("physical-media-launcher")
@@ -74,6 +75,7 @@ class Plugin:
 
     async def get_status(self) -> Dict[str, Any]:
         s = self._store.settings
+        detected = self._discover_game_mounts()
         return {
             "status": self._status,
             "progress": self._progress,
@@ -87,6 +89,8 @@ class Plugin:
             "last_error": s.last_error,
             "log_lines": list(s.log_lines[-50:]),
             "busy": self._busy,
+            "detected_mounts": detected,
+            "has_detected_media": len(detected) > 0,
         }
 
     async def set_auto_launch(self, enabled: bool) -> Dict[str, Any]:
@@ -99,9 +103,8 @@ class Plugin:
         return await self.get_status()
 
     async def rescan_media(self) -> Dict[str, Any]:
-        result = await self._watcher.scan_once()
-        mounts = list(result.get("mounts") or [])
-        all_mounts = list(result.get("all_mounts") or [])
+        all_mounts = [str(p) for p in list_removable_mounts()]
+        mounts = self._discover_game_mounts()
         await self._log(
             f"Manual rescan: {len(all_mounts)} mount(s), "
             f"{len(mounts)} with game_info.json"
@@ -121,24 +124,67 @@ class Plugin:
             **(await self.get_status()),
         }
 
-    async def process_mount(self, mount_path: str) -> Dict[str, Any]:
-        await self._handle_mount(Path(mount_path), force=True)
+    async def start_transfer(
+        self,
+        mount_path: str = "",
+        force_recopy: bool = False,
+    ) -> Dict[str, Any]:
+        """Manually start SD -> SSD copy for a detected (or specified) mount."""
+        target = (mount_path or "").strip()
+        if not target:
+            detected = self._discover_game_mounts()
+            if not detected:
+                await self._log("Start Transfer failed: no game_info.json media found")
+                self._store.update(last_error="No game SD/USB with game_info.json is mounted")
+                await self._set_status("Error", progress=0.0)
+                return await self.get_status()
+            target = detected[0]
+
+        await self._log(
+            f"Manual transfer requested for {target} "
+            f"(force_recopy={bool(force_recopy)})"
+        )
+        await self._handle_mount(
+            Path(target),
+            force=True,
+            force_recopy=bool(force_recopy),
+        )
         return await self.get_status()
+
+    async def process_mount(self, mount_path: str) -> Dict[str, Any]:
+        await self._handle_mount(Path(mount_path), force=True, force_recopy=False)
+        return await self.get_status()
+
+    def _discover_game_mounts(self) -> list[str]:
+        found: list[str] = []
+        for mount in list_removable_mounts():
+            if find_game_info(mount) is not None:
+                found.append(str(mount))
+        return found
 
     # ------------------------------------------------------------------
     # Core pipeline
     # ------------------------------------------------------------------
 
     async def _on_mount(self, mount: Path) -> None:
-        await self._handle_mount(mount, force=False)
+        await self._handle_mount(mount, force=False, force_recopy=False)
 
-    async def _handle_mount(self, mount: Path, *, force: bool) -> None:
+    async def _handle_mount(
+        self,
+        mount: Path,
+        *,
+        force: bool,
+        force_recopy: bool = False,
+    ) -> None:
         key = str(mount.resolve()) if mount.exists() else str(mount)
         async with self._lock:
             if self._busy:
                 await self._log(f"Busy; ignoring mount event for {key}")
                 return
             if not force and key in self._handled_mounts:
+                await self._log(
+                    f"Already processed {key}; use Start Transfer to run again"
+                )
                 return
             self._busy = True
 
@@ -158,8 +204,27 @@ class Plugin:
 
             dest = info.destination_dir
             exe_rel = info.exe_path
+            source_dir = info.source_game_dir
+            source_exe = info.source_exe
 
-            if destination_ready(dest, exe_rel):
+            await self._log(
+                f"Game '{info.game_name}': source={source_dir}, exe={source_exe}, dest={dest}"
+            )
+
+            if not source_dir.is_dir():
+                raise FileNotFoundError(
+                    f"GameFolder not found on SD card: {source_dir}. "
+                    f"Check GameFolder in game_info.json."
+                )
+            if not source_exe.is_file():
+                # Helpful listing for common ExePath mistakes.
+                raise FileNotFoundError(
+                    f"Source executable not found on media: {source_exe}. "
+                    f"Check ExePath in game_info.json (path must be relative to GameFolder)."
+                )
+
+            already = destination_ready(dest, exe_rel)
+            if already and not force_recopy:
                 await self._log(f"Game already on SSD at {dest}; skipping copy")
                 self._copying = False
                 self._progress_message = "Already on SSD — copy skipped"
@@ -167,10 +232,8 @@ class Plugin:
                 self._bytes_total = 0
                 await self._set_status("Game already on SSD", progress=100.0)
             else:
-                if not info.source_exe.is_file():
-                    raise FileNotFoundError(
-                        f"Source executable not found on media: {info.source_exe}"
-                    )
+                if already and force_recopy:
+                    await self._log(f"Force re-copy requested; replacing {dest}")
                 self._copying = True
                 self._progress_message = "Preparing copy..."
                 self._bytes_copied = 0
@@ -204,7 +267,7 @@ class Plugin:
                     await self._emit_status()
 
                 result = await copy_game_tree(
-                    info.source_game_dir,
+                    source_dir,
                     dest,
                     progress_cb=on_progress,
                 )
@@ -249,7 +312,7 @@ class Plugin:
                 await notify("Physical Media Launcher", f"Launching {info.game_name}")
                 await decky.emit("pml_launched", info.game_name, shortcut.steam_launch_id)
             else:
-                await self._set_status("Ready (auto-launch off)", progress=100.0)
+                await self._set_status("Ready (copy complete)", progress=100.0)
 
             self._handled_mounts.add(key)
             await self._emit_status()

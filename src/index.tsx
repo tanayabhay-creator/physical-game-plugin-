@@ -31,6 +31,10 @@ const rescanMedia = callable<
   [],
   PluginStatus & { mounts: string[]; all_mounts?: string[] }
 >("rescan_media");
+const startTransfer = callable<
+  [mount_path?: string, force_recopy?: boolean],
+  PluginStatus
+>("start_transfer");
 
 function Content() {
   const [state, setState] = useState<PluginStatus>(EMPTY_STATUS);
@@ -51,7 +55,6 @@ function Content() {
 
     void refresh();
 
-    // Live updates while a copy is running (backend emits these frequently).
     const onStatus = addEventListener<[PluginStatus]>("pml_status", (status) => {
       if (mounted) {
         setState(status);
@@ -75,7 +78,6 @@ function Content() {
       }));
     });
 
-    // Slow poll as a fallback if an event is missed while the menu is closed.
     const timer = window.setInterval(() => {
       void refresh();
     }, 3000);
@@ -104,15 +106,14 @@ function Content() {
     try {
       const next = await rescanMedia();
       setState(next);
-      const gameMounts = next.mounts || [];
+      const gameMounts = next.mounts || next.detected_mounts || [];
       const allMounts = next.all_mounts || [];
       let body: string;
       if (gameMounts.length > 0) {
-        body = `Found game_info.json on ${gameMounts.length} volume(s)`;
+        body = `Detected ${gameMounts.length} game card(s). Press Start Transfer to copy.`;
       } else if (allMounts.length > 0) {
         body =
-          `SD/USB is mounted (${allMounts.length}), but game_info.json is missing from the card root. ` +
-          `Add game_info.json next to your game folder.`;
+          `SD/USB is mounted (${allMounts.length}), but game_info.json is missing from the card root.`;
       } else {
         body =
           "No SD/USB mounts found under /run/media/deck. Insert the card and wait for SteamOS to mount it.";
@@ -129,6 +130,38 @@ function Content() {
     }
   };
 
+  const onStartTransfer = async (forceRecopy: boolean) => {
+    try {
+      toaster.toast({
+        title: "Physical Media Launcher",
+        body: forceRecopy ? "Force re-copy starting…" : "Starting SD → SSD transfer…",
+      });
+      const next = await startTransfer("", forceRecopy);
+      setState(next);
+      if (next.last_error) {
+        toaster.toast({
+          title: "Transfer failed",
+          body: next.last_error,
+        });
+      } else if ((next.status || "").toLowerCase().includes("copy")) {
+        toaster.toast({
+          title: "Physical Media Launcher",
+          body: next.status,
+        });
+      } else {
+        toaster.toast({
+          title: "Physical Media Launcher",
+          body: next.status || "Transfer finished",
+        });
+      }
+    } catch (err) {
+      toaster.toast({
+        title: "Physical Media Launcher",
+        body: `Transfer failed: ${String(err)}`,
+      });
+    }
+  };
+
   const onClearLog = async () => {
     try {
       setState(await clearLog());
@@ -140,7 +173,7 @@ function Content() {
   const logText =
     state.log_lines.length > 0
       ? state.log_lines.slice(-12).join("\n")
-      : "No transfers yet. Insert an SD card with game_info.json on the root.";
+      : "No transfers yet. Insert an SD card with game_info.json, then press Start Transfer.";
 
   const showProgress =
     state.copying ||
@@ -156,6 +189,9 @@ function Content() {
         ? formatBytes(state.bytes_copied)
         : "Waiting…";
 
+  const detected = state.detected_mounts || [];
+  const canTransfer = detected.length > 0 && !state.busy && !state.copying;
+
   return (
     <>
       <PanelSection title="Status">
@@ -164,6 +200,18 @@ function Content() {
             {state.status}
           </Field>
         </PanelSectionRow>
+
+        <PanelSectionRow>
+          <Field label="Detected game media">
+            {detected.length > 0 ? `${detected.length} volume(s)` : "None"}
+          </Field>
+        </PanelSectionRow>
+
+        {detected.length > 0 ? (
+          <PanelSectionRow>
+            <Field label="Mount path" description={detected[0]} />
+          </PanelSectionRow>
+        ) : null}
 
         <PanelSectionRow>
           <Field label="Last transferred game">
@@ -238,12 +286,42 @@ function Content() {
           <PanelSectionRow>
             <Field
               label="Transfer"
-              description="Progress appears here when a game is copying from SD/USB to the SSD."
+              description="Press Start Transfer after a game card is detected."
             >
               Idle
             </Field>
           </PanelSectionRow>
         )}
+      </PanelSection>
+
+      <PanelSection title="Transfer">
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={!canTransfer}
+            onClick={() => void onStartTransfer(false)}
+          >
+            {canTransfer
+              ? "Start Transfer (SD → SSD)"
+              : state.busy
+                ? "Transfer in progress…"
+                : "Start Transfer (detect a card first)"}
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={!canTransfer}
+            onClick={() => void onStartTransfer(true)}
+          >
+            Force Re-Copy (overwrite SSD)
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => void onRescan()}>
+            Rescan inserted media
+          </ButtonItem>
+        </PanelSectionRow>
       </PanelSection>
 
       <PanelSection title="Auto-Launch">
@@ -260,11 +338,6 @@ function Content() {
       </PanelSection>
 
       <PanelSection title="Actions">
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => void onRescan()}>
-            Rescan inserted media
-          </ButtonItem>
-        </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => void onClearLog()}>
             Clear log

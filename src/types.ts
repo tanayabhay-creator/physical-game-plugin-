@@ -11,6 +11,8 @@ export type PluginStatus = {
   last_error: string;
   log_lines: string[];
   busy: boolean;
+  detected_mounts?: string[];
+  has_detected_media?: boolean;
 };
 
 export type ProgressEvent = {
@@ -35,6 +37,8 @@ export const EMPTY_STATUS: PluginStatus = {
   last_error: "",
   log_lines: [],
   busy: false,
+  detected_mounts: [],
+  has_detected_media: false,
 };
 
 export function formatBytes(bytes: number): string {
