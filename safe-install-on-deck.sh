@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
-# Bulletproof Steam Deck reinstall. Fixes ownership first, installs from /tmp.
+# Bulletproof Steam Deck reinstall.
+# - Fixes ownership first
+# - Never deletes its own working directory out from under itself
+# - Can install from an already-cloned repo OR download a fresh copy
 set -euo pipefail
 
 USER_NAME="$(id -un)"
 HOME_DIR="${HOME:-/home/deck}"
 REPO_URL="https://github.com/tanayabhay-creator/physical-game-plugin-.git"
 BRANCH="cursor/physical-media-launcher-006e"
-WORK_DIR="/tmp/pml-install-${USER_NAME}"
 PLUGIN_NAME="PhysicalMediaLauncher"
 HOMEBREW_DIR="${HOME_DIR}/homebrew"
 TARGET="${HOMEBREW_DIR}/plugins/${PLUGIN_NAME}"
+
+# Unique work dir; do NOT reuse a path the caller may already be sitting in.
+WORK_DIR="/tmp/pml-work-${USER_NAME}-$$"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "======================================================"
 echo " Physical Media Launcher — SteamOS safe installer"
@@ -24,14 +31,14 @@ if [[ "${USER_NAME}" == "root" ]]; then
   exit 1
 fi
 
+# Leave any doomed cwd before cleanup.
+cd /tmp
+
 echo "==> [1/5] Fixing ownership (sudo password may be required)..."
-# Fix common root-owned leftovers from earlier failed installs.
 sudo chown -R "${USER_NAME}:${USER_NAME}" \
   "${HOME_DIR}/homebrew" \
   "${HOME_DIR}/Downloads" \
   "${HOME_DIR}/Games" \
-  "${HOME_DIR}/Downloads/physical-game-plugin-" \
-  /tmp/pml-install-* \
   2>/dev/null || true
 
 if [[ -d "${HOME_DIR}/homebrew" ]]; then
@@ -53,15 +60,21 @@ fi
 
 if [[ ! -w "${HOME_DIR}/homebrew/plugins" ]]; then
   echo "ERROR: still cannot write to ${HOME_DIR}/homebrew/plugins"
-  echo "Run: sudo chown -R ${USER_NAME}:${USER_NAME} ${HOME_DIR}/homebrew"
   exit 1
 fi
 
-echo "==> [2/5] Downloading plugin into ${WORK_DIR} ..."
-rm -rf "${WORK_DIR}"
-mkdir -p "${WORK_DIR}"
-git clone --branch "${BRANCH}" --single-branch "${REPO_URL}" "${WORK_DIR}/repo"
-cd "${WORK_DIR}/repo"
+SRC_DIR=""
+if [[ -f "${SCRIPT_DIR}/main.py" && -f "${SCRIPT_DIR}/plugin.json" ]]; then
+  echo "==> [2/5] Using already-downloaded plugin at:"
+  echo "    ${SCRIPT_DIR}"
+  SRC_DIR="${SCRIPT_DIR}"
+else
+  echo "==> [2/5] Downloading plugin into ${WORK_DIR} ..."
+  rm -rf "${WORK_DIR}"
+  mkdir -p "${WORK_DIR}"
+  git clone --branch "${BRANCH}" --single-branch "${REPO_URL}" "${WORK_DIR}/repo"
+  SRC_DIR="${WORK_DIR}/repo"
+fi
 
 echo "==> [3/5] Installing into ${TARGET} ..."
 rm -rf "${TARGET}"
@@ -74,9 +87,9 @@ if command -v rsync >/dev/null 2>&1; then
     --exclude '.rollup.cache' \
     --exclude '__pycache__' \
     --exclude 'tests' \
-    ./ "${TARGET}/"
+    "${SRC_DIR}/" "${TARGET}/"
 else
-  cp -a ./. "${TARGET}/"
+  cp -a "${SRC_DIR}/." "${TARGET}/"
   rm -rf "${TARGET}/.git" "${TARGET}/node_modules" "${TARGET}/.rollup.cache" \
     "${TARGET}/__pycache__" "${TARGET}/tests" || true
 fi
@@ -93,8 +106,8 @@ if [[ ! -f "${TARGET}/dist/index.js" ]]; then
   echo "WARNING: dist/index.js missing (UI may not load)"
 fi
 
-echo "==> [5/5] Cleanup work dir"
-rm -rf "${WORK_DIR}"
+echo "==> [5/5] Cleanup"
+rm -rf "${WORK_DIR}" || true
 
 echo
 echo "======================================================"
