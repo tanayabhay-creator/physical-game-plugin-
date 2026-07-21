@@ -1,0 +1,10 @@
+{
+  "auto_launch": true,
+  "poll_interval_sec": 2.0,
+  "notify_on_detect": true,
+  "last_game": "",
+  "last_status": "Ready",
+  "last_mount": "",
+  "last_error": "",
+  "log_lines": []
+}

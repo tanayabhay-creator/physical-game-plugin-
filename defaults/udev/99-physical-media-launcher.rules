@@ -1,0 +1,10 @@
+# Optional: faster SD/USB detection for Physical Media Launcher.
+# Install (Desktop Mode, as root):
+#   sudo cp 99-physical-media-launcher.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#
+# The plugin also polls /run/media/<user> on its own, so this rule is optional.
+# It simply stamps a trigger file the helper script can use.
+
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_FS_USAGE}=="filesystem", RUN+="/usr/local/bin/pml-media-event.sh add %E{DEVNAME}"
+ACTION=="remove", SUBSYSTEM=="block", RUN+="/usr/local/bin/pml-media-event.sh remove %E{DEVNAME}"

@@ -1,0 +1,14 @@
+node_modules/
+.rollup.cache/
+# Keep dist/index.js committed so the plugin can be dropped into Decky without a local frontend build.
+dist/*.map
+*.log
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.vscode/
+.idea/
+settings/
+*.vdf.bak

@@ -1,0 +1,11 @@
+{
+  "name": "Physical Media Launcher",
+  "author": "Physical Media Launcher Contributors",
+  "flags": ["_root"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["storage", "sdcard", "non-steam", "automation"],
+    "description": "Detect game SD/USB media, copy titles to the internal SSD, register Non-Steam shortcuts, and auto-launch.",
+    "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
+  }
+}

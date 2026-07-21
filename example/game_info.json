@@ -1,0 +1,10 @@
+{
+  "GameName": "Example Adventure",
+  "GameFolder": "games/ExampleAdventure",
+  "ExePath": "bin/ExampleAdventure.exe",
+  "StartDir": "bin",
+  "LaunchOptions": "WINEDLLOVERRIDES=\"dinput8=n,b\" %command%",
+  "TargetSSDPath": "/home/deck/Games/ExampleAdventure",
+  "CompatTool": "proton_experimental",
+  "AutoLaunch": true
+}
