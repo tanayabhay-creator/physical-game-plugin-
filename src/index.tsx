@@ -182,7 +182,6 @@ function Content() {
       const next = await getStatus();
       setState(next);
 
-      // Prefer launching even if backend build field is missing (stale loader).
       const exe = next.last_exe || "/home/deck/Games/Silksong/Silksong.exe";
       const startDir = exe.includes("/")
         ? exe.slice(0, exe.lastIndexOf("/"))
@@ -194,10 +193,12 @@ function Content() {
         start_dir: startDir,
         launch_options: "",
         compat_tool: "proton_experimental",
-        steam_app_id: next.last_steam_app_id,
-        shortcut_appid: next.last_shortcut_appid || next.last_steam_app_id,
+        // Force live AddShortcut — do not pass VDF CRC32 as steam_app_id.
+        steam_app_id: "0",
+        shortcut_appid: next.last_shortcut_appid || "0",
         should_launch: true,
         already_installed: true,
+        needs_add_shortcut: true,
       });
 
       if (result.ok && result.appId) {
@@ -230,6 +231,61 @@ function Content() {
     } catch (err) {
       toaster.toast({
         title: "Launch failed",
+        body: String(err),
+      });
+    }
+  };
+
+  const onFixSteamShortcut = async () => {
+    try {
+      const next = await getStatus();
+      setState(next);
+      const exe = next.last_exe || "";
+      if (!exe) {
+        toaster.toast({
+          title: "Nothing to add",
+          body: "Transfer a game first, then try again.",
+        });
+        return;
+      }
+      const startDir = exe.includes("/")
+        ? exe.slice(0, exe.lastIndexOf("/"))
+        : "";
+      const result = await addGameToSteam({
+        game_name: next.last_game || "Physical Media Game",
+        exe,
+        start_dir: startDir,
+        launch_options: "",
+        compat_tool: "proton_experimental",
+        steam_app_id: "0",
+        shortcut_appid: next.last_shortcut_appid || "0",
+        already_installed: true,
+        needs_add_shortcut: true,
+        should_launch: false,
+      });
+      if (result.ok && result.appId) {
+        try {
+          await reportSteamAppId(
+            next.last_game || "Physical Media Game",
+            exe,
+            result.appId
+          );
+        } catch (err) {
+          console.warn("report_steam_appid failed", err);
+        }
+        toaster.toast({
+          title: "Added to Non-Steam",
+          body: `${next.last_game || "game"} (AppID ${result.appId}) — check Library → Non-Steam`,
+        });
+      } else {
+        toaster.toast({
+          title: "Add to Steam failed",
+          body: result.error || "Could not add shortcut",
+        });
+      }
+    } catch (err) {
+      toaster.toast({
+        title: "Add to Steam failed",
         body: String(err),
       });
     }
@@ -412,6 +468,11 @@ function Content() {
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => void onFixSteamShortcut()}>
+            Add / Fix Non-Steam shortcut
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => void onRescan()}>
             Rescan inserted media
           </ButtonItem>
@@ -472,7 +533,12 @@ export default definePlugin(() => {
     "pml_add_to_steam",
     (payload) => {
       void (async () => {
-        const result = await addGameToSteam(payload);
+        // Live library registration — must call AddShortcut (not VDF-only).
+        const result = await addGameToSteam({
+          ...payload,
+          steam_app_id: "0",
+          needs_add_shortcut: true,
+        });
         if (result.ok) {
           if (result.appId) {
             try {
@@ -481,12 +547,38 @@ export default definePlugin(() => {
               console.warn("report_steam_appid failed", err);
             }
           }
-          if (!payload.already_installed || payload.needs_add_shortcut) {
+          toaster.toast({
+            title: "Added to Non-Steam",
+            body: `${payload.game_name}${
+              result.appId ? ` (AppID ${result.appId})` : ""
+            }`,
+          });
+
+          // Add + launch in one shot so we never launch with a VDF-only id.
+          if (payload.should_launch) {
+            const launch = await launchSteamGame({
+              ...payload,
+              steam_app_id: result.appId ? String(result.appId) : "0",
+              needs_add_shortcut: false,
+            });
+            if (launch.ok && launch.appId) {
+              try {
+                await reportSteamAppId(
+                  payload.game_name,
+                  payload.exe,
+                  launch.appId
+                );
+              } catch (err) {
+                console.warn("report_steam_appid failed", err);
+              }
+            }
             toaster.toast({
-              title: "Added to Steam",
-              body: `${payload.game_name}${
-                result.appId ? ` (AppID ${result.appId})` : ""
-              }`,
+              title: launch.ok ? "Launching with Proton" : "Launch failed",
+              body: launch.ok
+                ? `${payload.game_name}${
+                    launch.appId ? ` (AppID ${launch.appId})` : ""
+                  }`
+                : launch.error || "Could not launch",
             });
           }
         } else {
@@ -494,7 +586,7 @@ export default definePlugin(() => {
             title: "Steam shortcut",
             body:
               result.error ||
-              "SteamClient add failed — shortcuts.vdf fallback was still written.",
+              "SteamClient add failed — try Add/Fix Non-Steam shortcut.",
           });
         }
       })();

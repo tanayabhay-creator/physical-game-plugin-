@@ -115,7 +115,7 @@ class Plugin:
             "last_steam_app_id": steam_app_id,
             "last_vdf_launch_id": vdf_launch_id,
             "last_shortcut_appid": shortcut_appid,
-            "plugin_build": "2026-07-21-launch4",
+            "plugin_build": "2026-07-21-launch5",
             "log_lines": [str(x) for x in list(s.log_lines[-50:])],
             "busy": bool(self._busy),
             "detected_mounts": [str(x) for x in detected],
@@ -178,7 +178,7 @@ class Plugin:
                 "last_steam_app_id": "0",
                 "last_vdf_launch_id": "0",
                 "last_shortcut_appid": "0",
-                "plugin_build": "2026-07-21-launch4",
+                "plugin_build": "2026-07-21-launch5",
                 "log_lines": [],
                 "busy": False,
                 "detected_mounts": [],
@@ -517,11 +517,13 @@ class Plugin:
                 launch_options=info.resolved_launch_options(),
             )
             await self._log(
-                f"[launch4] shortcuts.vdf {'created' if shortcut.created else 'updated'} "
+                f"[launch5] shortcuts.vdf {'created' if shortcut.created else 'updated'} "
                 f"appid={shortcut.appid}"
             )
 
-            # Prefer a previously saved SteamClient AppID for reliable RunGame launches.
+            # Only reuse AppIDs previously returned by SteamClient.Apps.AddShortcut.
+            # Never fall back to the VDF CRC32 id here — that skipped AddShortcut and
+            # left Non-Steam empty until Steam restarted.
             saved_app_id = "0"
             ids = self._store.settings.steam_app_ids or {}
             if info.game_name in ids:
@@ -530,8 +532,19 @@ class Plugin:
                 saved_app_id = str(ids[str(info.destination_exe)])
 
             shortcut_appid_s = str(int(shortcut.appid) & 0xFFFFFFFF)
-            # Keep 64-bit launch id only as a string in settings.
             vdf_launch_s = str(int(shortcut.steam_launch_id))
+
+            # Drop poisoned saves where steam_app_id == VDF CRC32 id.
+            if saved_app_id == shortcut_appid_s:
+                await self._log(
+                    f"[launch5] Clearing poisoned steam_app_id={saved_app_id} "
+                    "(matched VDF CRC32; will re-AddShortcut)"
+                )
+                saved_app_id = "0"
+                cleaned = dict(ids)
+                cleaned.pop(str(info.game_name), None)
+                cleaned.pop(str(info.destination_exe), None)
+                self._store.update(steam_app_ids=cleaned, last_steam_app_id="0")
 
             self._store.update(
                 last_exe=str(info.destination_exe),
@@ -540,9 +553,9 @@ class Plugin:
                 last_steam_app_id=(
                     saved_app_id
                     if saved_app_id not in {"", "0"}
-                    else self._store.settings.last_steam_app_id or shortcut_appid_s
+                    else "0"
                 ),
-                plugin_build="2026-07-21-launch4",
+                plugin_build="2026-07-21-launch5",
             )
 
             steam_payload = {
@@ -550,38 +563,36 @@ class Plugin:
                 "exe": str(info.destination_exe),
                 "start_dir": str(info.resolved_start_dir()),
                 "launch_options": info.resolved_launch_options(),
-                "compat_tool": info.compat_tool or "",
+                "compat_tool": info.compat_tool or "proton_experimental",
                 "should_launch": bool(should_launch),
                 "vdf_launch_id": vdf_launch_s,
-                "steam_app_id": str(
-                    saved_app_id
-                    if saved_app_id not in {"", "0"}
-                    else self._store.settings.last_steam_app_id or shortcut_appid_s
+                # Real SteamClient id only — empty means frontend must AddShortcut.
+                "steam_app_id": (
+                    saved_app_id if saved_app_id not in {"", "0"} else "0"
                 ),
                 "shortcut_appid": shortcut_appid_s,
                 "already_installed": bool(already and not force_recopy),
-                "needs_add_shortcut": saved_app_id in {"", "0"}
-                and str(self._store.settings.last_steam_app_id or "0") in {"", "0"},
+                "needs_add_shortcut": True,
             }
 
+            await self._set_status(
+                "Adding to Non-Steam library...", progress=100.0
+            )
+            await self._emit_status()
             await decky.emit("pml_add_to_steam", steam_payload)
             await self._log(
-                f"[launch4] Steam register requested for '{info.game_name}' "
-                f"(shortcut_appid={shortcut_appid_s}, should_launch={should_launch})"
+                f"[launch5] Live AddShortcut requested for '{info.game_name}' "
+                f"(vdf_appid={shortcut_appid_s}, saved_steam_app_id={saved_app_id}, "
+                f"should_launch={should_launch})"
             )
 
+            # Frontend handles AddShortcut + optional launch in one shot.
+            # Give it time to call report_steam_appid before we finish.
+            await asyncio.sleep(2.5)
+            self._store.load()
+            refreshed = str(self._store.settings.last_steam_app_id or "0")
+
             if should_launch:
-                await self._set_status("Launching Game...", progress=100.0)
-                await self._emit_status()
-                await asyncio.sleep(1.0)
-                self._store.load()
-                refreshed = str(self._store.settings.last_steam_app_id or shortcut_appid_s)
-                steam_payload["steam_app_id"] = refreshed
-                await decky.emit("pml_launch_game", steam_payload)
-                await self._log(
-                    f"[launch4] Launch event emitted (steam_app_id={refreshed}, "
-                    f"shortcut_appid={shortcut_appid_s})"
-                )
                 await self._set_status("Launch requested", progress=100.0)
                 await notify("Physical Media Launcher", f"Launching {info.game_name}")
                 await decky.emit("pml_launched", info.game_name, refreshed)
@@ -589,7 +600,7 @@ class Plugin:
                 await self._set_status("Added to Steam", progress=100.0)
                 await notify(
                     "Physical Media Launcher",
-                    f"{info.game_name} added to Steam library",
+                    f"{info.game_name} added to Non-Steam library",
                 )
 
             self._handled_mounts.add(key)

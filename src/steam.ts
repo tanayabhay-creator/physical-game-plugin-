@@ -17,6 +17,7 @@ export type SteamShortcutRequest = {
 declare global {
   interface Window {
     SteamClient?: any;
+    collectionStore?: any;
   }
 }
 
@@ -60,35 +61,91 @@ function resolveCompatTool(req: SteamShortcutRequest): string {
   return looksLikeWindowsExe(req.exe || "") ? "proton_experimental" : "";
 }
 
+function appMatches(
+  app: any,
+  appName: string,
+  exePath: string
+): string | null {
+  const name = String(
+    app?.display_name ?? app?.strDisplayName ?? app?.name ?? app?.AppName ?? ""
+  );
+  const exe = String(
+    app?.strExePath ?? app?.exe ?? app?.Exe ?? app?.steam_churn ?? ""
+  );
+  const appid = asIdString(
+    app?.appid ?? app?.appId ?? app?.unAppID ?? app?.appid_for_shortcut
+  );
+  if (!appid) {
+    return null;
+  }
+  const exeNorm = exePath.replace(/"/g, "");
+  const exeField = exe.replace(/"/g, "");
+  if (name === appName) {
+    return appid;
+  }
+  if (exeNorm && exeField && (exeField.includes(exeNorm) || exeNorm.includes(exeField))) {
+    return appid;
+  }
+  return null;
+}
+
+/**
+ * Find a Non-Steam shortcut that is already visible in the live Game Mode library.
+ * Never treat VDF CRC32 IDs as proof the shortcut is live.
+ */
 async function findExistingShortcutAppId(
   appName: string,
   exePath: string
 ): Promise<string | null> {
-  const apps = window.SteamClient?.Apps;
-  if (!apps?.GetAllApps) {
-    return null;
-  }
-
+  // collectionStore is what Game Mode's library actually uses.
   try {
-    const all = await Promise.resolve(apps.GetAllApps());
-    if (!Array.isArray(all)) {
-      return null;
-    }
+    const cs = window.collectionStore;
+    const bags: any[] = [
+      cs?.allApps,
+      cs?.deckDesktopApps?.allApps,
+      cs?.deckDesktopApps?.apps,
+      cs?.localGames?.allApps,
+      cs?.appsList?.allApps,
+    ].filter(Boolean);
 
-    for (const app of all) {
-      const name = String(app?.display_name ?? app?.strDisplayName ?? app?.name ?? "");
-      const exe = String(app?.strExePath ?? app?.exe ?? app?.Exe ?? "");
-      const appid = asIdString(app?.appid ?? app?.appId ?? app?.unAppID);
-      if (!appid) {
-        continue;
-      }
-      if (name === appName || (exe && exePath && exe.includes(exePath))) {
-        return appid;
+    for (const bag of bags) {
+      const list: any[] = Array.isArray(bag)
+        ? bag
+        : typeof bag?.values === "function"
+          ? Array.from(bag.values())
+          : typeof bag?.[Symbol.iterator] === "function"
+            ? Array.from(bag)
+            : [];
+      for (const app of list) {
+        const id = appMatches(app, appName, exePath);
+        if (id) {
+          console.log("PML found existing shortcut in collectionStore", id);
+          return id;
+        }
       }
     }
-  } catch {
-    // ignore
+  } catch (err) {
+    console.warn("PML collectionStore scan failed", err);
   }
+
+  const apps = window.SteamClient?.Apps;
+  if (apps?.GetAllApps) {
+    try {
+      const all = await Promise.resolve(apps.GetAllApps());
+      if (Array.isArray(all)) {
+        for (const app of all) {
+          const id = appMatches(app, appName, exePath);
+          if (id) {
+            console.log("PML found existing shortcut in GetAllApps", id);
+            return id;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("PML GetAllApps scan failed", err);
+    }
+  }
+
   return null;
 }
 
@@ -113,6 +170,7 @@ async function configureShortcut(
   }
   try {
     if (typeof apps.SetShortcutExe === "function") {
+      // Steam expects quoted exe paths for Non-Steam shortcuts.
       await Promise.resolve(apps.SetShortcutExe(numericId, `"${req.exe}"`));
     }
   } catch {
@@ -136,7 +194,6 @@ async function configureShortcut(
   }
 
   // Required for Windows .exe Non-Steam games on Steam Deck.
-  // Without this, Steam often shows: "Game configuration unavailable".
   const compat = resolveCompatTool(req);
   if (compat && typeof apps.SpecifyCompatTool === "function") {
     const tools = [compat, "proton_experimental", "proton_hotfix", "proton_9"];
@@ -152,7 +209,7 @@ async function configureShortcut(
     }
   }
 
-  await sleep(400);
+  await sleep(500);
 }
 
 async function runGame(appId: string, launchOptions = ""): Promise<boolean> {
@@ -191,9 +248,24 @@ async function runGame(appId: string, launchOptions = ""): Promise<boolean> {
   return false;
 }
 
+export function softRestartSteam(): boolean {
+  try {
+    const sc = window.SteamClient;
+    if (typeof sc?.User?.StartRestart === "function") {
+      sc.User.StartRestart(false);
+      console.log("PML SteamClient.User.StartRestart(false)");
+      return true;
+    }
+  } catch (err) {
+    console.warn("StartRestart failed", err);
+  }
+  return false;
+}
+
 /**
- * Ensure a Non-Steam shortcut exists and is configured (exe/start dir/Proton).
- * Returns the SteamClient AppID that must be used with RunGame.
+ * Ensure a Non-Steam shortcut exists in the LIVE Game Mode library.
+ * Always calls AddShortcut when the game is not already visible — never trust
+ * VDF CRC32 IDs alone (those only show up after a Steam restart).
  */
 export async function ensureConfiguredShortcut(
   req: SteamShortcutRequest
@@ -204,48 +276,81 @@ export async function ensureConfiguredShortcut(
   }
 
   const startDir = resolveStartDir(req);
-  let appId =
-    asIdString(req.steam_app_id) ||
-    (await findExistingShortcutAppId(req.game_name, req.exe));
+  let appId = await findExistingShortcutAppId(req.game_name, req.exe);
 
-  if (!appId) {
-    // AddShortcut signatures vary across Steam builds; try common ones.
-    let created: unknown;
-    try {
-      created = await Promise.resolve(
-        apps.AddShortcut(req.game_name, req.exe, req.launch_options || "", "")
-      );
-    } catch {
-      created = await Promise.resolve(
-        apps.AddShortcut(req.game_name, req.exe, startDir, req.launch_options || "")
-      );
-    }
-    appId = asIdString(created as number | string);
+  const saved = asIdString(req.steam_app_id);
+  const vdfId = asIdString(req.shortcut_appid);
+
+  // Reuse a just-created SteamClient AppID from the add handler when the
+  // library overview has not refreshed yet. Never reuse the VDF CRC32 id.
+  if (!appId && saved && saved !== vdfId && req.needs_add_shortcut === false) {
+    console.log("PML reusing just-created SteamClient AppID", saved);
+    appId = saved;
   }
 
   if (!appId) {
-    throw new Error("SteamClient did not return a shortcut AppID");
+    console.log(
+      "PML AddShortcut",
+      req.game_name,
+      req.exe,
+      startDir,
+      req.launch_options || ""
+    );
+    // Documented signature: (appName, executablePath, directory, launchOptions)
+    const created = await Promise.resolve(
+      apps.AddShortcut(
+        req.game_name,
+        req.exe,
+        startDir,
+        req.launch_options || ""
+      )
+    );
+    appId = asIdString(created as number | string);
+    console.log("PML AddShortcut returned", appId);
+  }
+
+  if (!appId) {
+    throw new Error("SteamClient.Apps.AddShortcut did not return an AppID");
   }
 
   await configureShortcut(appId, { ...req, start_dir: startDir });
+
+  // Confirm it became visible; if not, soft-restart so VDF/fallback loads.
+  await sleep(300);
+  const visible = await findExistingShortcutAppId(req.game_name, req.exe);
+  if (visible) {
+    return visible;
+  }
+  console.warn(
+    "PML shortcut AppID",
+    appId,
+    "not yet visible in library — returning AddShortcut id anyway"
+  );
   return appId;
 }
 
 export async function addGameToSteam(
   req: SteamShortcutRequest
-): Promise<{ ok: boolean; appId?: number; error?: string }> {
+): Promise<{ ok: boolean; appId?: number; error?: string; restarted?: boolean }> {
   try {
     const appId = await ensureConfiguredShortcut(req);
     return { ok: true, appId: Number(appId) };
   } catch (err) {
-    return { ok: false, error: String(err) };
+    // Last resort: VDF was written by backend; soft-restart Steam so it loads.
+    const restarted = softRestartSteam();
+    return {
+      ok: false,
+      restarted,
+      error: restarted
+        ? `${String(err)} — restarting Steam so the Non-Steam shortcut can appear.`
+        : String(err),
+    };
   }
 }
 
 /**
  * Configure shortcut (with Proton for .exe) and launch via RunGame only.
- * Do NOT use steam://rungameid with VDF-computed IDs — those cause
- * "Game configuration unavailable" when they don't match SteamClient's AppID.
+ * Creates the live library entry first when missing.
  */
 export async function launchSteamGame(
   req: SteamShortcutRequest

@@ -156,30 +156,75 @@ function resolveCompatTool(req) {
     }
     return looksLikeWindowsExe(req.exe || "") ? "proton_experimental" : "";
 }
-async function findExistingShortcutAppId(appName, exePath) {
-    const apps = window.SteamClient?.Apps;
-    if (!apps?.GetAllApps) {
+function appMatches(app, appName, exePath) {
+    const name = String(app?.display_name ?? app?.strDisplayName ?? app?.name ?? app?.AppName ?? "");
+    const exe = String(app?.strExePath ?? app?.exe ?? app?.Exe ?? app?.steam_churn ?? "");
+    const appid = asIdString(app?.appid ?? app?.appId ?? app?.unAppID ?? app?.appid_for_shortcut);
+    if (!appid) {
         return null;
     }
+    const exeNorm = exePath.replace(/"/g, "");
+    const exeField = exe.replace(/"/g, "");
+    if (name === appName) {
+        return appid;
+    }
+    if (exeNorm && exeField && (exeField.includes(exeNorm) || exeNorm.includes(exeField))) {
+        return appid;
+    }
+    return null;
+}
+/**
+ * Find a Non-Steam shortcut that is already visible in the live Game Mode library.
+ * Never treat VDF CRC32 IDs as proof the shortcut is live.
+ */
+async function findExistingShortcutAppId(appName, exePath) {
+    // collectionStore is what Game Mode's library actually uses.
     try {
-        const all = await Promise.resolve(apps.GetAllApps());
-        if (!Array.isArray(all)) {
-            return null;
-        }
-        for (const app of all) {
-            const name = String(app?.display_name ?? app?.strDisplayName ?? app?.name ?? "");
-            const exe = String(app?.strExePath ?? app?.exe ?? app?.Exe ?? "");
-            const appid = asIdString(app?.appid ?? app?.appId ?? app?.unAppID);
-            if (!appid) {
-                continue;
-            }
-            if (name === appName || (exe && exePath && exe.includes(exePath))) {
-                return appid;
+        const cs = window.collectionStore;
+        const bags = [
+            cs?.allApps,
+            cs?.deckDesktopApps?.allApps,
+            cs?.deckDesktopApps?.apps,
+            cs?.localGames?.allApps,
+            cs?.appsList?.allApps,
+        ].filter(Boolean);
+        for (const bag of bags) {
+            const list = Array.isArray(bag)
+                ? bag
+                : typeof bag?.values === "function"
+                    ? Array.from(bag.values())
+                    : typeof bag?.[Symbol.iterator] === "function"
+                        ? Array.from(bag)
+                        : [];
+            for (const app of list) {
+                const id = appMatches(app, appName, exePath);
+                if (id) {
+                    console.log("PML found existing shortcut in collectionStore", id);
+                    return id;
+                }
             }
         }
     }
-    catch {
-        // ignore
+    catch (err) {
+        console.warn("PML collectionStore scan failed", err);
+    }
+    const apps = window.SteamClient?.Apps;
+    if (apps?.GetAllApps) {
+        try {
+            const all = await Promise.resolve(apps.GetAllApps());
+            if (Array.isArray(all)) {
+                for (const app of all) {
+                    const id = appMatches(app, appName, exePath);
+                    if (id) {
+                        console.log("PML found existing shortcut in GetAllApps", id);
+                        return id;
+                    }
+                }
+            }
+        }
+        catch (err) {
+            console.warn("PML GetAllApps scan failed", err);
+        }
     }
     return null;
 }
@@ -200,6 +245,7 @@ async function configureShortcut(appId, req) {
     }
     try {
         if (typeof apps.SetShortcutExe === "function") {
+            // Steam expects quoted exe paths for Non-Steam shortcuts.
             await Promise.resolve(apps.SetShortcutExe(numericId, `"${req.exe}"`));
         }
     }
@@ -223,7 +269,6 @@ async function configureShortcut(appId, req) {
         // ignore
     }
     // Required for Windows .exe Non-Steam games on Steam Deck.
-    // Without this, Steam often shows: "Game configuration unavailable".
     const compat = resolveCompatTool(req);
     if (compat && typeof apps.SpecifyCompatTool === "function") {
         const tools = [compat, "proton_experimental", "proton_hotfix", "proton_9"];
@@ -239,7 +284,7 @@ async function configureShortcut(appId, req) {
             }
         }
     }
-    await sleep(400);
+    await sleep(500);
 }
 async function runGame(appId, launchOptions = "") {
     const apps = window.SteamClient?.Apps;
@@ -275,9 +320,24 @@ async function runGame(appId, launchOptions = "") {
     }
     return false;
 }
+function softRestartSteam() {
+    try {
+        const sc = window.SteamClient;
+        if (typeof sc?.User?.StartRestart === "function") {
+            sc.User.StartRestart(false);
+            console.log("PML SteamClient.User.StartRestart(false)");
+            return true;
+        }
+    }
+    catch (err) {
+        console.warn("StartRestart failed", err);
+    }
+    return false;
+}
 /**
- * Ensure a Non-Steam shortcut exists and is configured (exe/start dir/Proton).
- * Returns the SteamClient AppID that must be used with RunGame.
+ * Ensure a Non-Steam shortcut exists in the LIVE Game Mode library.
+ * Always calls AddShortcut when the game is not already visible — never trust
+ * VDF CRC32 IDs alone (those only show up after a Steam restart).
  */
 async function ensureConfiguredShortcut(req) {
     const apps = window.SteamClient?.Apps;
@@ -285,23 +345,33 @@ async function ensureConfiguredShortcut(req) {
         throw new Error("SteamClient.Apps.AddShortcut is unavailable");
     }
     const startDir = resolveStartDir(req);
-    let appId = asIdString(req.steam_app_id) ||
-        (await findExistingShortcutAppId(req.game_name, req.exe));
-    if (!appId) {
-        // AddShortcut signatures vary across Steam builds; try common ones.
-        let created;
-        try {
-            created = await Promise.resolve(apps.AddShortcut(req.game_name, req.exe, req.launch_options || "", ""));
-        }
-        catch {
-            created = await Promise.resolve(apps.AddShortcut(req.game_name, req.exe, startDir, req.launch_options || ""));
-        }
-        appId = asIdString(created);
+    let appId = await findExistingShortcutAppId(req.game_name, req.exe);
+    const saved = asIdString(req.steam_app_id);
+    const vdfId = asIdString(req.shortcut_appid);
+    // Reuse a just-created SteamClient AppID from the add handler when the
+    // library overview has not refreshed yet. Never reuse the VDF CRC32 id.
+    if (!appId && saved && saved !== vdfId && req.needs_add_shortcut === false) {
+        console.log("PML reusing just-created SteamClient AppID", saved);
+        appId = saved;
     }
     if (!appId) {
-        throw new Error("SteamClient did not return a shortcut AppID");
+        console.log("PML AddShortcut", req.game_name, req.exe, startDir, req.launch_options || "");
+        // Documented signature: (appName, executablePath, directory, launchOptions)
+        const created = await Promise.resolve(apps.AddShortcut(req.game_name, req.exe, startDir, req.launch_options || ""));
+        appId = asIdString(created);
+        console.log("PML AddShortcut returned", appId);
+    }
+    if (!appId) {
+        throw new Error("SteamClient.Apps.AddShortcut did not return an AppID");
     }
     await configureShortcut(appId, { ...req, start_dir: startDir });
+    // Confirm it became visible; if not, soft-restart so VDF/fallback loads.
+    await sleep(300);
+    const visible = await findExistingShortcutAppId(req.game_name, req.exe);
+    if (visible) {
+        return visible;
+    }
+    console.warn("PML shortcut AppID", appId, "not yet visible in library — returning AddShortcut id anyway");
     return appId;
 }
 async function addGameToSteam(req) {
@@ -310,13 +380,20 @@ async function addGameToSteam(req) {
         return { ok: true, appId: Number(appId) };
     }
     catch (err) {
-        return { ok: false, error: String(err) };
+        // Last resort: VDF was written by backend; soft-restart Steam so it loads.
+        const restarted = softRestartSteam();
+        return {
+            ok: false,
+            restarted,
+            error: restarted
+                ? `${String(err)} — restarting Steam so the Non-Steam shortcut can appear.`
+                : String(err),
+        };
     }
 }
 /**
  * Configure shortcut (with Proton for .exe) and launch via RunGame only.
- * Do NOT use steam://rungameid with VDF-computed IDs — those cause
- * "Game configuration unavailable" when they don't match SteamClient's AppID.
+ * Creates the live library entry first when missing.
  */
 async function launchSteamGame(req) {
     try {
@@ -484,7 +561,6 @@ function Content() {
             // (that is what was throwing "Python exception" on Deck).
             const next = await getStatus();
             setState(next);
-            // Prefer launching even if backend build field is missing (stale loader).
             const exe = next.last_exe || "/home/deck/Games/Silksong/Silksong.exe";
             const startDir = exe.includes("/")
                 ? exe.slice(0, exe.lastIndexOf("/"))
@@ -495,10 +571,12 @@ function Content() {
                 start_dir: startDir,
                 launch_options: "",
                 compat_tool: "proton_experimental",
-                steam_app_id: next.last_steam_app_id,
-                shortcut_appid: next.last_shortcut_appid || next.last_steam_app_id,
+                // Force live AddShortcut — do not pass VDF CRC32 as steam_app_id.
+                steam_app_id: "0",
+                shortcut_appid: next.last_shortcut_appid || "0",
                 should_launch: true,
                 already_installed: true,
+                needs_add_shortcut: true,
             });
             if (result.ok && result.appId) {
                 try {
@@ -524,6 +602,59 @@ function Content() {
         catch (err) {
             toaster.toast({
                 title: "Launch failed",
+                body: String(err),
+            });
+        }
+    };
+    const onFixSteamShortcut = async () => {
+        try {
+            const next = await getStatus();
+            setState(next);
+            const exe = next.last_exe || "";
+            if (!exe) {
+                toaster.toast({
+                    title: "Nothing to add",
+                    body: "Transfer a game first, then try again.",
+                });
+                return;
+            }
+            const startDir = exe.includes("/")
+                ? exe.slice(0, exe.lastIndexOf("/"))
+                : "";
+            const result = await addGameToSteam({
+                game_name: next.last_game || "Physical Media Game",
+                exe,
+                start_dir: startDir,
+                launch_options: "",
+                compat_tool: "proton_experimental",
+                steam_app_id: "0",
+                shortcut_appid: next.last_shortcut_appid || "0",
+                already_installed: true,
+                needs_add_shortcut: true,
+                should_launch: false,
+            });
+            if (result.ok && result.appId) {
+                try {
+                    await reportSteamAppId(next.last_game || "Physical Media Game", exe, result.appId);
+                }
+                catch (err) {
+                    console.warn("report_steam_appid failed", err);
+                }
+                toaster.toast({
+                    title: "Added to Non-Steam",
+                    body: `${next.last_game || "game"} (AppID ${result.appId}) — check Library → Non-Steam`,
+                });
+            }
+            else {
+                toaster.toast({
+                    title: "Add to Steam failed",
+                    body: result.error || "Could not add shortcut",
+                });
+            }
+        }
+        catch (err) {
+            toaster.toast({
+                title: "Add to Steam failed",
                 body: String(err),
             });
         }
@@ -576,7 +707,7 @@ function Content() {
                                         overflow: "hidden",
                                         textOverflow: "ellipsis",
                                         whiteSpace: "nowrap",
-                                    }, children: state.progress_message }) }) })) : null] })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Transfer", description: "Press Start Transfer after a game card is detected.", children: "Idle" }) })) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Transfer", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(false), children: transferLocked ? "Transfer in progress…" : "Start Transfer (SD → SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(true), children: "Force Re-Copy (overwrite SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onLaunchLast(), children: "Launch last game now" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onRescan(), children: "Rescan inserted media" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onResetBusy(), children: "Reset stuck transfer state" }) })] }), SP_JSX.jsx(DFL.PanelSection, { title: "Auto-Launch", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Enable Auto-Launch on Insertion", description: "When ON, reinserting the SD card launches the game automatically (plugin toggle overrides game_info.json AutoLaunch).", checked: state.auto_launch, onChange: (checked) => {
+                                    }, children: state.progress_message }) }) })) : null] })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Transfer", description: "Press Start Transfer after a game card is detected.", children: "Idle" }) })) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Transfer", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(false), children: transferLocked ? "Transfer in progress…" : "Start Transfer (SD → SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(true), children: "Force Re-Copy (overwrite SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onLaunchLast(), children: "Launch last game now" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onFixSteamShortcut(), children: "Add / Fix Non-Steam shortcut" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onRescan(), children: "Rescan inserted media" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onResetBusy(), children: "Reset stuck transfer state" }) })] }), SP_JSX.jsx(DFL.PanelSection, { title: "Auto-Launch", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Enable Auto-Launch on Insertion", description: "When ON, reinserting the SD card launches the game automatically (plugin toggle overrides game_info.json AutoLaunch).", checked: state.auto_launch, onChange: (checked) => {
                             void onToggleAutoLaunch(checked);
                         } }) }) }), SP_JSX.jsx(DFL.PanelSection, { title: "Actions", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onClearLog(), children: "Clear log" }) }) }), SP_JSX.jsx(DFL.PanelSection, { title: "Log", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("pre", { style: {
                             width: "100%",
@@ -593,7 +724,12 @@ function Content() {
 var index = definePlugin(() => {
     const onAddToSteam = addEventListener("pml_add_to_steam", (payload) => {
         void (async () => {
-            const result = await addGameToSteam(payload);
+            // Live library registration — must call AddShortcut (not VDF-only).
+            const result = await addGameToSteam({
+                ...payload,
+                steam_app_id: "0",
+                needs_add_shortcut: true,
+            });
             if (result.ok) {
                 if (result.appId) {
                     try {
@@ -603,10 +739,30 @@ var index = definePlugin(() => {
                         console.warn("report_steam_appid failed", err);
                     }
                 }
-                if (!payload.already_installed || payload.needs_add_shortcut) {
+                toaster.toast({
+                    title: "Added to Non-Steam",
+                    body: `${payload.game_name}${result.appId ? ` (AppID ${result.appId})` : ""}`,
+                });
+                // Add + launch in one shot so we never launch with a VDF-only id.
+                if (payload.should_launch) {
+                    const launch = await launchSteamGame({
+                        ...payload,
+                        steam_app_id: result.appId ? String(result.appId) : "0",
+                        needs_add_shortcut: false,
+                    });
+                    if (launch.ok && launch.appId) {
+                        try {
+                            await reportSteamAppId(payload.game_name, payload.exe, launch.appId);
+                        }
+                        catch (err) {
+                            console.warn("report_steam_appid failed", err);
+                        }
+                    }
                     toaster.toast({
-                        title: "Added to Steam",
-                        body: `${payload.game_name}${result.appId ? ` (AppID ${result.appId})` : ""}`,
+                        title: launch.ok ? "Launching with Proton" : "Launch failed",
+                        body: launch.ok
+                            ? `${payload.game_name}${launch.appId ? ` (AppID ${launch.appId})` : ""}`
+                            : launch.error || "Could not launch",
                     });
                 }
             }
@@ -614,7 +770,7 @@ var index = definePlugin(() => {
                 toaster.toast({
                     title: "Steam shortcut",
                     body: result.error ||
-                        "SteamClient add failed — shortcuts.vdf fallback was still written.",
+                        "SteamClient add failed — try Add/Fix Non-Steam shortcut.",
                 });
             }
         })();
