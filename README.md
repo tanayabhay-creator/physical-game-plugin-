@@ -88,20 +88,58 @@ See [`example/game_info.json`](example/game_info.json).
 ## Install (developer)
 
 1. Install [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader).
-2. Build frontend: `pnpm i && pnpm run build`
-3. Copy/symlink this folder into `~/homebrew/plugins/PhysicalMediaLauncher`
-4. Restart Decky / reload plugins in Game Mode.
-
-Optional faster hardware events (Desktop Mode):
+2. In Desktop Mode Konsole, from this repo:
 
 ```bash
-sudo cp defaults/bin/pml-media-event.sh /usr/local/bin/
-sudo chmod +x /usr/local/bin/pml-media-event.sh
-sudo cp defaults/udev/99-physical-media-launcher.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules
+chmod +x ./install-on-deck.sh
+./install-on-deck.sh
 ```
 
-The in-plugin poller works without those system files.
+Or manually:
+
+```bash
+mkdir -p ~/homebrew/plugins
+rm -rf ~/homebrew/plugins/PhysicalMediaLauncher
+cp -a . ~/homebrew/plugins/PhysicalMediaLauncher
+mkdir -p ~/Games
+```
+
+3. Return to Game Mode and reload Decky plugins.
+
+### Permission denied in Konsole?
+
+SteamOS keeps the **system disk read-only**. Do **not** install into `/usr/local` or `/etc` unless you intentionally unlock the rootfs.
+
+**Plugin install (most common fix):**
+
+```bash
+# Decky must exist first
+ls ~/homebrew
+
+# If "Permission denied" on ~/homebrew:
+sudo chown -R deck:deck ~/homebrew
+mkdir -p ~/homebrew/plugins
+mkdir -p ~/Games
+```
+
+**Game copy destination** in `game_info.json` must be under your home, e.g.:
+
+```json
+"TargetSSDPath": "/home/deck/Games/MyGame"
+```
+
+Avoid paths like `/usr/...`, `/opt/...`, or `/run/media/...` as the SSD target.
+
+**Optional udev helpers** (not required). Only if you really want them:
+
+```bash
+sudo steamos-readonly disable
+sudo mkdir -p /etc/udev/rules.d
+# point the rule at the helper inside the plugin folder, then:
+sudo steamos-readonly enable
+```
+
+Prefer skipping udev — the plugin already polls `/run/media/deck`.
 
 ## Tests
 

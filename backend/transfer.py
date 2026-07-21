@@ -63,9 +63,17 @@ async def copy_game_tree(
     last_report = 0.0
 
     staging = dest_dir.parent / f".{dest_dir.name}.pml-staging"
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True, exist_ok=True)
+    try:
+        dest_dir.parent.mkdir(parents=True, exist_ok=True)
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True, exist_ok=True)
+    except PermissionError as exc:
+        raise PermissionError(
+            f"Cannot create game folder at {dest_dir.parent}. "
+            f"Use a path under /home/deck (e.g. /home/deck/Games/MyGame). "
+            f"Original error: {exc}"
+        ) from exc
 
     async def report(pct: float, message: str, *, force: bool = False) -> None:
         nonlocal last_report
