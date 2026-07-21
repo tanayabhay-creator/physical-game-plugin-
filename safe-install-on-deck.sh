@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Bulletproof Steam Deck reinstall.
-# - Fixes ownership first
-# - Never deletes its own working directory out from under itself
-# - Can install from an already-cloned repo OR download a fresh copy
+# Only touches ownership/permissions for Physical Media Launcher — never
+# recursively chmod's other Decky plugins (that caused Operation not permitted).
 set -euo pipefail
 
 USER_NAME="$(id -un)"
@@ -11,11 +10,9 @@ REPO_URL="https://github.com/tanayabhay-creator/physical-game-plugin-.git"
 BRANCH="cursor/physical-media-launcher-006e"
 PLUGIN_NAME="PhysicalMediaLauncher"
 HOMEBREW_DIR="${HOME_DIR}/homebrew"
-TARGET="${HOMEBREW_DIR}/plugins/${PLUGIN_NAME}"
-
-# Unique work dir; do NOT reuse a path the caller may already be sitting in.
+PLUGINS_DIR="${HOMEBREW_DIR}/plugins"
+TARGET="${PLUGINS_DIR}/${PLUGIN_NAME}"
 WORK_DIR="/tmp/pml-work-${USER_NAME}-$$"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "======================================================"
@@ -27,39 +24,31 @@ echo
 
 if [[ "${USER_NAME}" == "root" ]]; then
   echo "ERROR: Do not run this as root / with sudo."
-  echo "Run it as the deck user, and only enter your password when sudo asks."
   exit 1
 fi
 
-# Leave any doomed cwd before cleanup.
 cd /tmp
 
-echo "==> [1/5] Fixing ownership (sudo password may be required)..."
-sudo chown -R "${USER_NAME}:${USER_NAME}" \
-  "${HOME_DIR}/homebrew" \
-  "${HOME_DIR}/Downloads" \
-  "${HOME_DIR}/Games" \
-  2>/dev/null || true
-
-if [[ -d "${HOME_DIR}/homebrew" ]]; then
-  sudo chown -R "${USER_NAME}:${USER_NAME}" "${HOME_DIR}/homebrew"
-  sudo chmod -R u+rwX "${HOME_DIR}/homebrew"
-fi
-
-mkdir -p "${HOME_DIR}/Games" "${HOME_DIR}/Downloads" "${HOME_DIR}/homebrew/plugins"
-sudo chown -R "${USER_NAME}:${USER_NAME}" \
-  "${HOME_DIR}/Games" \
-  "${HOME_DIR}/Downloads" \
-  "${HOME_DIR}/homebrew"
-chmod -R u+rwX "${HOME_DIR}/Games" "${HOME_DIR}/Downloads" "${HOME_DIR}/homebrew"
-
-if [[ ! -d "${HOME_DIR}/homebrew" ]]; then
-  echo "ERROR: ${HOME_DIR}/homebrew not found. Install Decky Loader first."
+echo "==> [1/5] Ensuring Decky plugin folder is writable..."
+if [[ ! -d "${HOMEBREW_DIR}" ]]; then
+  echo "ERROR: ${HOMEBREW_DIR} not found. Install Decky Loader first."
   exit 1
 fi
 
-if [[ ! -w "${HOME_DIR}/homebrew/plugins" ]]; then
-  echo "ERROR: still cannot write to ${HOME_DIR}/homebrew/plugins"
+# Only fix what we need — do NOT chmod -R the entire homebrew tree.
+sudo chown "${USER_NAME}:${USER_NAME}" "${HOMEBREW_DIR}" 2>/dev/null || true
+sudo chown "${USER_NAME}:${USER_NAME}" "${PLUGINS_DIR}" 2>/dev/null || true
+mkdir -p "${PLUGINS_DIR}" "${HOME_DIR}/Games" "${HOME_DIR}/Downloads"
+sudo chown "${USER_NAME}:${USER_NAME}" "${PLUGINS_DIR}" "${HOME_DIR}/Games" "${HOME_DIR}/Downloads" 2>/dev/null || true
+
+# If an old copy of OUR plugin is root-owned, fix only that folder.
+if [[ -e "${TARGET}" ]]; then
+  sudo chown -R "${USER_NAME}:${USER_NAME}" "${TARGET}" 2>/dev/null || true
+fi
+
+if [[ ! -w "${PLUGINS_DIR}" ]]; then
+  echo "ERROR: cannot write to ${PLUGINS_DIR}"
+  echo "Run: sudo chown deck:deck ${PLUGINS_DIR}"
   exit 1
 fi
 
@@ -94,8 +83,9 @@ else
     "${TARGET}/__pycache__" "${TARGET}/tests" || true
 fi
 
-sudo chown -R "${USER_NAME}:${USER_NAME}" "${TARGET}"
-chmod -R u+rwX "${TARGET}"
+# Ownership/permissions ONLY for our plugin.
+sudo chown -R "${USER_NAME}:${USER_NAME}" "${TARGET}" 2>/dev/null || true
+chmod -R u+rwX "${TARGET}" 2>/dev/null || true
 
 echo "==> [4/5] Verifying ..."
 if [[ ! -f "${TARGET}/main.py" ]]; then
