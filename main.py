@@ -79,21 +79,22 @@ class Plugin:
         detected = self._discover_game_mounts()
         return {
             "status": self._status,
-            "progress": self._progress,
-            "progress_message": self._progress_message,
-            "bytes_copied": self._bytes_copied,
-            "bytes_total": self._bytes_total,
-            "copying": self._copying,
-            "auto_launch": s.auto_launch,
-            "last_game": s.last_game,
-            "last_mount": s.last_mount,
-            "last_error": s.last_error,
-            "last_exe": s.last_exe,
-            "last_steam_app_id": s.last_steam_app_id,
-            "last_vdf_launch_id": s.last_vdf_launch_id,
-            "log_lines": list(s.log_lines[-50:]),
-            "busy": self._busy,
-            "detected_mounts": detected,
+            "progress": float(self._progress or 0),
+            "progress_message": self._progress_message or "",
+            "bytes_copied": int(self._bytes_copied or 0),
+            "bytes_total": int(self._bytes_total or 0),
+            "copying": bool(self._copying),
+            "auto_launch": bool(s.auto_launch),
+            "last_game": s.last_game or "",
+            "last_mount": s.last_mount or "",
+            "last_error": s.last_error or "",
+            "last_exe": s.last_exe or "",
+            # Stringify large IDs — JS/Decky RPC cannot safely carry 64-bit ints.
+            "last_steam_app_id": str(int(s.last_steam_app_id or 0)),
+            "last_vdf_launch_id": str(int(s.last_vdf_launch_id or 0)),
+            "log_lines": [str(x) for x in list(s.log_lines[-50:])],
+            "busy": bool(self._busy),
+            "detected_mounts": [str(x) for x in detected],
             "has_detected_media": len(detected) > 0,
         }
 
@@ -111,42 +112,58 @@ class Plugin:
         """Save the AppID returned by SteamClient.Apps.AddShortcut."""
         try:
             app_id_i = int(app_id)
-        except (TypeError, ValueError):
-            return await self.get_status()
-        ids = dict(self._store.settings.steam_app_ids)
-        if game_name:
-            ids[str(game_name)] = app_id_i
-        if exe:
-            ids[str(exe)] = app_id_i
-        self._store.update(
-            steam_app_ids=ids,
-            last_steam_app_id=app_id_i,
-            last_game=game_name or self._store.settings.last_game,
-            last_exe=exe or self._store.settings.last_exe,
-        )
-        await self._log(f"Saved Steam AppID {app_id_i} for '{game_name}'")
+            ids = dict(self._store.settings.steam_app_ids)
+            if game_name:
+                ids[str(game_name)] = app_id_i
+            if exe:
+                ids[str(exe)] = app_id_i
+            self._store.update(
+                steam_app_ids=ids,
+                last_steam_app_id=app_id_i,
+                last_game=game_name or self._store.settings.last_game,
+                last_exe=exe or self._store.settings.last_exe,
+            )
+            await self._log(f"Saved Steam AppID {app_id_i} for '{game_name}'")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("report_steam_appid failed")
+            try:
+                self._store.update(last_error=f"report_steam_appid: {exc}")
+            except Exception:
+                pass
         return await self.get_status()
 
     async def launch_last_game(self) -> Dict[str, Any]:
-        """Manual launch button — uses saved AppID / last VDF launch id."""
+        """Manual launch button — frontend SteamClient does the real launch."""
         try:
             s = self._store.settings
             app_id = int(s.last_steam_app_id or 0)
             launch_id = int(s.last_vdf_launch_id or 0)
             game = s.last_game or "game"
-            if not app_id and game in s.steam_app_ids:
+            if not app_id and game in (s.steam_app_ids or {}):
                 app_id = int(s.steam_app_ids[game])
-            if not app_id and s.last_exe in s.steam_app_ids:
+            if not app_id and s.last_exe in (s.steam_app_ids or {}):
                 app_id = int(s.steam_app_ids[s.last_exe])
 
+            if not app_id and not launch_id:
+                self._store.update(
+                    last_error=(
+                        "No saved Steam AppID yet. Run Start Transfer once "
+                        "with the plugin menu open, then try Launch again."
+                    )
+                )
+                await self._set_status("Error", progress=0.0)
+                return await self.get_status()
+
+            # Strings only in event payload for Decky/JS safety.
             payload = {
                 "game_name": game,
-                "exe": s.last_exe,
+                "exe": s.last_exe or "",
                 "start_dir": "",
                 "launch_options": "",
                 "should_launch": True,
-                "steam_app_id": app_id,
-                "vdf_launch_id": launch_id,
+                "steam_app_id": str(app_id),
+                "vdf_launch_id": str(launch_id),
+                "shortcut_appid": str(app_id),
                 "already_installed": True,
             }
             await self._log(
@@ -154,21 +171,38 @@ class Plugin:
                 f"(steam_app_id={app_id}, vdf_launch_id={launch_id})"
             )
             await decky.emit("pml_launch_game", payload)
-            if launch_id:
-                try:
-                    await launch_steam_app(launch_id, shortcut_appid=app_id or None)
-                except Exception as exc:  # noqa: BLE001
-                    await self._log(f"Backend launch attempt: {exc}")
-            elif not app_id:
-                self._store.update(last_error="No saved Steam AppID yet. Transfer once first.")
-                await self._set_status("Error", progress=0.0)
-            else:
-                await self._set_status("Launch requested", progress=100.0)
+            self._store.update(last_error="")
+            await self._set_status("Launch requested", progress=100.0)
             return await self.get_status()
         except Exception as exc:  # noqa: BLE001
-            self._store.update(last_error=str(exc))
-            await self._log(f"launch_last_game error: {exc}")
-            return await self.get_status()
+            logger.exception("launch_last_game failed")
+            try:
+                self._store.update(last_error=f"{type(exc).__name__}: {exc}")
+                await self._set_status("Error", progress=0.0)
+            except Exception:
+                pass
+            try:
+                return await self.get_status()
+            except Exception:
+                return {
+                    "status": "Error",
+                    "progress": 0,
+                    "progress_message": "",
+                    "bytes_copied": 0,
+                    "bytes_total": 0,
+                    "copying": False,
+                    "auto_launch": True,
+                    "last_game": "",
+                    "last_mount": "",
+                    "last_error": str(exc),
+                    "last_exe": "",
+                    "last_steam_app_id": "0",
+                    "last_vdf_launch_id": "0",
+                    "log_lines": [],
+                    "busy": False,
+                    "detected_mounts": [],
+                    "has_detected_media": False,
+                }
 
     async def clear_log(self) -> Dict[str, Any]:
         self._store.update(log_lines=[], last_error="")
@@ -527,9 +561,10 @@ class Plugin:
                 "launch_options": info.resolved_launch_options(),
                 "compat_tool": info.compat_tool or "",
                 "should_launch": bool(should_launch),
-                "vdf_launch_id": shortcut.steam_launch_id,
-                "steam_app_id": int(saved_app_id),
-                "shortcut_appid": int(shortcut.appid),
+                # Strings avoid Decky/JS 64-bit integer RPC issues.
+                "vdf_launch_id": str(int(shortcut.steam_launch_id)),
+                "steam_app_id": str(int(saved_app_id)),
+                "shortcut_appid": str(int(shortcut.appid)),
                 "already_installed": bool(already and not force_recopy),
                 "needs_add_shortcut": bool(saved_app_id <= 0),
             }
@@ -549,27 +584,25 @@ class Plugin:
                 # Refresh payload with any AppID the frontend may have just saved.
                 self._store.load()
                 refreshed = int(self._store.settings.last_steam_app_id or saved_app_id or 0)
-                steam_payload["steam_app_id"] = refreshed
+                steam_payload["steam_app_id"] = str(refreshed)
                 await decky.emit("pml_launch_game", steam_payload)
                 await self._log(
                     f"Launch emit: steam_app_id={refreshed} "
                     f"vdf_launch_id={shortcut.steam_launch_id}"
                 )
+                # Frontend SteamClient is primary in Game Mode; backend URI is best-effort.
                 try:
                     await launch_steam_app(
                         shortcut.steam_launch_id,
                         shortcut_appid=int(shortcut.appid),
                     )
-                    await self._set_status("Game Launched", progress=100.0)
-                    await notify("Physical Media Launcher", f"Launching {info.game_name}")
-                    await decky.emit(
-                        "pml_launched", info.game_name, shortcut.steam_launch_id
-                    )
                 except Exception as launch_exc:  # noqa: BLE001
-                    await self._log(
-                        f"Backend URI launch failed (frontend may still launch): {launch_exc}"
-                    )
-                    await self._set_status("Launch requested", progress=100.0)
+                    await self._log(f"Backend URI launch note: {launch_exc}")
+                await self._set_status("Launch requested", progress=100.0)
+                await notify("Physical Media Launcher", f"Launching {info.game_name}")
+                await decky.emit(
+                    "pml_launched", info.game_name, str(shortcut.steam_launch_id)
+                )
             else:
                 await self._set_status("Added to Steam", progress=100.0)
                 await notify(

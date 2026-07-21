@@ -180,15 +180,45 @@ function Content() {
     try {
       const next = await launchLastGame();
       setState(next);
+      if (next.last_error) {
+        toaster.toast({
+          title: "Launch failed",
+          body: next.last_error,
+        });
+        return;
+      }
+      // Also launch directly from the button click context (more reliable in Game Mode).
+      const result = await launchSteamGame({
+        game_name: next.last_game || "game",
+        exe: next.last_exe || "",
+        start_dir: "",
+        launch_options: "",
+        steam_app_id: next.last_steam_app_id,
+        vdf_launch_id: next.last_vdf_launch_id,
+        shortcut_appid: next.last_steam_app_id,
+        should_launch: true,
+        already_installed: true,
+      });
       toaster.toast({
-        title: "Physical Media Launcher",
-        body: next.last_error || "Launch requested for last game",
+        title: result.ok ? "Launching" : "Launch failed",
+        body: result.ok
+          ? next.last_game || "game"
+          : result.error || "Could not launch",
       });
     } catch (err) {
-      toaster.toast({
-        title: "Launch failed",
-        body: String(err),
-      });
+      try {
+        const next = await getStatus();
+        setState(next);
+        toaster.toast({
+          title: "Launch failed",
+          body: next.last_error || String(err),
+        });
+      } catch {
+        toaster.toast({
+          title: "Launch failed",
+          body: String(err),
+        });
+      }
     }
   };
 
@@ -472,7 +502,7 @@ export default definePlugin(() => {
     }
   );
 
-  const onLaunched = addEventListener<[string, number]>(
+  const onLaunched = addEventListener<[string, string | number]>(
     "pml_launched",
     (gameName, launchId) => {
       toaster.toast({

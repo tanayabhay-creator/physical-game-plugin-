@@ -7,9 +7,9 @@ export type SteamShortcutRequest = {
   launch_options: string;
   compat_tool?: string;
   should_launch?: boolean;
-  vdf_launch_id?: number;
-  steam_app_id?: number;
-  shortcut_appid?: number;
+  vdf_launch_id?: number | string;
+  steam_app_id?: number | string;
+  shortcut_appid?: number | string;
   already_installed?: boolean;
   needs_add_shortcut?: boolean;
 };
@@ -39,8 +39,19 @@ function getSteamClient(): SteamClientAPI | undefined {
   return (window as Window & { SteamClient?: SteamClientAPI }).SteamClient;
 }
 
+function asIdString(value: number | string | undefined | null): string {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  return String(value);
+}
+
 function launchViaUri(launchId: number | string): void {
-  const url = `steam://rungameid/${launchId}`;
+  const id = asIdString(launchId);
+  if (!id || id === "0") {
+    return;
+  }
+  const url = `steam://rungameid/${id}`;
   const sc = getSteamClient();
   try {
     if (sc?.URL?.ExecuteSteamURL) {
@@ -63,8 +74,10 @@ function runGame(appId: number | string, launchOptions = ""): boolean {
   if (!sc?.Apps?.RunGame) {
     return false;
   }
-  const id = String(appId);
-  // Community plugins use different param2 values (-1 or 0).
+  const id = asIdString(appId);
+  if (!id || id === "0") {
+    return false;
+  }
   const attempts: Array<[number, number]> = [
     [-1, 0],
     [0, 0],
@@ -94,13 +107,15 @@ export async function addGameToSteam(
       };
     }
 
+    const existing = asIdString(req.steam_app_id);
     const shouldAdd =
       Boolean(req.needs_add_shortcut) ||
       !req.already_installed ||
-      !req.steam_app_id;
+      !existing ||
+      existing === "0";
 
-    if (!shouldAdd && req.steam_app_id) {
-      return { ok: true, appId: req.steam_app_id };
+    if (!shouldAdd) {
+      return { ok: true, appId: Number(existing) };
     }
 
     const appId = await sc.Apps.AddShortcut(
@@ -132,22 +147,22 @@ export async function launchSteamGame(
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     let launched = false;
+    const steamAppId = asIdString(req.steam_app_id);
+    const shortcutAppId = asIdString(req.shortcut_appid);
+    const vdfLaunchId = asIdString(req.vdf_launch_id);
 
-    if (req.steam_app_id && req.steam_app_id !== 0) {
-      launched = runGame(req.steam_app_id, req.launch_options || "") || launched;
+    if (steamAppId && steamAppId !== "0") {
+      launched = runGame(steamAppId, req.launch_options || "") || launched;
     }
-    if (req.shortcut_appid && req.shortcut_appid !== 0) {
-      launched = runGame(req.shortcut_appid, req.launch_options || "") || launched;
-      // unsigned form
-      const unsigned = req.shortcut_appid >>> 0;
-      launched = runGame(unsigned, req.launch_options || "") || launched;
+    if (shortcutAppId && shortcutAppId !== "0") {
+      launched = runGame(shortcutAppId, req.launch_options || "") || launched;
     }
-    if (req.vdf_launch_id) {
-      launchViaUri(req.vdf_launch_id);
+    if (vdfLaunchId && vdfLaunchId !== "0") {
+      launchViaUri(vdfLaunchId);
       launched = true;
     }
-    if (req.steam_app_id) {
-      launchViaUri(req.steam_app_id);
+    if (steamAppId && steamAppId !== "0") {
+      launchViaUri(steamAppId);
       launched = true;
     }
 

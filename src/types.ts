@@ -10,8 +10,8 @@ export type PluginStatus = {
   last_mount: string;
   last_error: string;
   last_exe?: string;
-  last_steam_app_id?: number;
-  last_vdf_launch_id?: number;
+  last_steam_app_id?: number | string;
+  last_vdf_launch_id?: number | string;
   log_lines: string[];
   busy: boolean;
   detected_mounts?: string[];

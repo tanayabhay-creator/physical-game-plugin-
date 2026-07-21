@@ -120,8 +120,18 @@ function formatBytes(bytes) {
 function getSteamClient() {
     return window.SteamClient;
 }
+function asIdString(value) {
+    if (value === undefined || value === null || value === "") {
+        return "";
+    }
+    return String(value);
+}
 function launchViaUri(launchId) {
-    const url = `steam://rungameid/${launchId}`;
+    const id = asIdString(launchId);
+    if (!id || id === "0") {
+        return;
+    }
+    const url = `steam://rungameid/${id}`;
     const sc = getSteamClient();
     try {
         if (sc?.URL?.ExecuteSteamURL) {
@@ -145,8 +155,10 @@ function runGame(appId, launchOptions = "") {
     if (!sc?.Apps?.RunGame) {
         return false;
     }
-    const id = String(appId);
-    // Community plugins use different param2 values (-1 or 0).
+    const id = asIdString(appId);
+    if (!id || id === "0") {
+        return false;
+    }
     const attempts = [
         [-1, 0],
         [0, 0],
@@ -173,11 +185,13 @@ async function addGameToSteam(req) {
                 error: "SteamClient.Apps.AddShortcut unavailable (VDF fallback only)",
             };
         }
+        const existing = asIdString(req.steam_app_id);
         const shouldAdd = Boolean(req.needs_add_shortcut) ||
             !req.already_installed ||
-            !req.steam_app_id;
-        if (!shouldAdd && req.steam_app_id) {
-            return { ok: true, appId: req.steam_app_id };
+            !existing ||
+            existing === "0";
+        if (!shouldAdd) {
+            return { ok: true, appId: Number(existing) };
         }
         const appId = await sc.Apps.AddShortcut(req.game_name, req.exe, req.start_dir, req.launch_options || "");
         const compat = (req.compat_tool || "").trim() ||
@@ -199,21 +213,21 @@ async function addGameToSteam(req) {
 async function launchSteamGame(req) {
     try {
         let launched = false;
-        if (req.steam_app_id && req.steam_app_id !== 0) {
-            launched = runGame(req.steam_app_id, req.launch_options || "") || launched;
+        const steamAppId = asIdString(req.steam_app_id);
+        const shortcutAppId = asIdString(req.shortcut_appid);
+        const vdfLaunchId = asIdString(req.vdf_launch_id);
+        if (steamAppId && steamAppId !== "0") {
+            launched = runGame(steamAppId, req.launch_options || "") || launched;
         }
-        if (req.shortcut_appid && req.shortcut_appid !== 0) {
-            launched = runGame(req.shortcut_appid, req.launch_options || "") || launched;
-            // unsigned form
-            const unsigned = req.shortcut_appid >>> 0;
-            launched = runGame(unsigned, req.launch_options || "") || launched;
+        if (shortcutAppId && shortcutAppId !== "0") {
+            launched = runGame(shortcutAppId, req.launch_options || "") || launched;
         }
-        if (req.vdf_launch_id) {
-            launchViaUri(req.vdf_launch_id);
+        if (vdfLaunchId && vdfLaunchId !== "0") {
+            launchViaUri(vdfLaunchId);
             launched = true;
         }
-        if (req.steam_app_id) {
-            launchViaUri(req.steam_app_id);
+        if (steamAppId && steamAppId !== "0") {
+            launchViaUri(steamAppId);
             launched = true;
         }
         if (!launched) {
@@ -370,16 +384,41 @@ function Content() {
         try {
             const next = await launchLastGame();
             setState(next);
+            if (next.last_error) {
+                toaster.toast({
+                    title: "Launch failed",
+                    body: next.last_error,
+                });
+                return;
+            }
+            // Also launch directly from the button click context (more reliable in Game Mode).
+            const result = await launchSteamGame({
+                launch_options: "",
+                steam_app_id: next.last_steam_app_id,
+                vdf_launch_id: next.last_vdf_launch_id,
+                shortcut_appid: next.last_steam_app_id});
             toaster.toast({
-                title: "Physical Media Launcher",
-                body: next.last_error || "Launch requested for last game",
+                title: result.ok ? "Launching" : "Launch failed",
+                body: result.ok
+                    ? next.last_game || "game"
+                    : result.error || "Could not launch",
             });
         }
         catch (err) {
-            toaster.toast({
-                title: "Launch failed",
-                body: String(err),
-            });
+            try {
+                const next = await getStatus();
+                setState(next);
+                toaster.toast({
+                    title: "Launch failed",
+                    body: next.last_error || String(err),
+                });
+            }
+            catch {
+                toaster.toast({
+                    title: "Launch failed",
+                    body: String(err),
+                });
+            }
         }
     };
     const onResetBusy = async () => {
