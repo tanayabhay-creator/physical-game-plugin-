@@ -182,16 +182,10 @@ function Content() {
       const next = await getStatus();
       setState(next);
 
-      if (next.plugin_build !== "2026-07-21-launch3") {
-        toaster.toast({
-          title: "Old plugin build",
-          body: `Build ${next.plugin_build || "unknown"} — reinstall/update the plugin.`,
-        });
-      }
-
+      // Prefer launching even if backend build field is missing (stale loader).
       const result = await launchSteamGame({
-        game_name: next.last_game || "game",
-        exe: next.last_exe || "",
+        game_name: next.last_game || "Silksong",
+        exe: next.last_exe || "/home/deck/Games/Silksong/Silksong.exe",
         start_dir: "",
         launch_options: "",
         steam_app_id: next.last_steam_app_id,
@@ -201,10 +195,17 @@ function Content() {
         already_installed: true,
       });
 
+      if (!next.plugin_build) {
+        toaster.toast({
+          title: "Backend not updated",
+          body: "UI is new but Python backend is old. Reinstall + restart Decky.",
+        });
+      }
+
       toaster.toast({
         title: result.ok ? "Launching" : "Launch failed",
         body: result.ok
-          ? `${next.last_game || "game"} (build ${next.plugin_build || "?"})`
+          ? `${next.last_game || "game"}`
           : result.error || "Could not launch",
       });
     } catch (err) {

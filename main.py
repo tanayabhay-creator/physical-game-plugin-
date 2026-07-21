@@ -22,10 +22,10 @@ if str(PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(PLUGIN_DIR))
 
 from backend.game_info import GameInfoError, find_game_info, load_game_info  # noqa: E402
-from backend.launcher import launch_steam_app, notify  # noqa: E402
+from backend.launcher import notify  # noqa: E402
 from backend.media_watcher import MediaWatcher  # noqa: E402
 from backend.settings_store import SettingsStore  # noqa: E402
-from backend.shortcuts import ensure_non_steam_shortcut  # noqa: E402
+from backend.shortcuts import ensure_non_steam_shortcut, lookup_shortcut_ids  # noqa: E402
 from backend.steam_paths import list_removable_mounts  # noqa: E402
 from backend.transfer import copy_game_tree, destination_ready  # noqa: E402
 
@@ -77,6 +77,29 @@ class Plugin:
     async def get_status(self) -> Dict[str, Any]:
         s = self._store.settings
         detected = self._discover_game_mounts()
+
+        # Recover AppIDs from shortcuts.vdf if settings lost them.
+        shortcut_appid = str(s.last_shortcut_appid or "0")
+        steam_app_id = str(s.last_steam_app_id or "0")
+        vdf_launch_id = str(s.last_vdf_launch_id or "0")
+        if (shortcut_appid in {"", "0"} or vdf_launch_id in {"", "0"}) and (
+            s.last_game or s.last_exe
+        ):
+            found = lookup_shortcut_ids(app_name=s.last_game, exe_path=s.last_exe)
+            if found is not None:
+                shortcut_appid = str(int(found.appid) & 0xFFFFFFFF)
+                vdf_launch_id = str(int(found.steam_launch_id))
+                if steam_app_id in {"", "0"}:
+                    steam_app_id = shortcut_appid
+                try:
+                    self._store.update(
+                        last_shortcut_appid=shortcut_appid,
+                        last_vdf_launch_id=vdf_launch_id,
+                        last_steam_app_id=steam_app_id,
+                    )
+                except Exception:
+                    pass
+
         return {
             "status": self._status,
             "progress": float(self._progress or 0),
@@ -89,9 +112,9 @@ class Plugin:
             "last_mount": s.last_mount or "",
             "last_error": s.last_error or "",
             "last_exe": s.last_exe or "",
-            "last_steam_app_id": str(s.last_steam_app_id or "0"),
-            "last_vdf_launch_id": str(s.last_vdf_launch_id or "0"),
-            "last_shortcut_appid": str(s.last_shortcut_appid or "0"),
+            "last_steam_app_id": steam_app_id,
+            "last_vdf_launch_id": vdf_launch_id,
+            "last_shortcut_appid": shortcut_appid,
             "plugin_build": "2026-07-21-launch3",
             "log_lines": [str(x) for x in list(s.log_lines[-50:])],
             "busy": bool(self._busy),

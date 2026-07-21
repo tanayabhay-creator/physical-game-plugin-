@@ -92,6 +92,56 @@ def _default_shortcut(
     }
 
 
+def lookup_shortcut_ids(
+    *,
+    app_name: str = "",
+    exe_path: str = "",
+    shortcuts_path: Optional[Path] = None,
+) -> Optional[ShortcutResult]:
+    """Read an existing Non-Steam shortcut's app ids without modifying the file."""
+    path = Path(shortcuts_path) if shortcuts_path else find_shortcuts_vdf()
+    if path is None or not path.is_file():
+        return None
+    try:
+        data = vdf_binary.loads(path.read_bytes())
+    except Exception:
+        logger.exception("Failed reading shortcuts.vdf for lookup")
+        return None
+    data = vdf_binary.normalize_shortcuts_root(data)
+    exe_abs = ""
+    if exe_path:
+        try:
+            exe_abs = str(Path(exe_path).expanduser().resolve())
+        except Exception:
+            exe_abs = exe_path
+    existing = vdf_binary.find_shortcut(
+        data["shortcuts"],
+        app_name=app_name or None,
+        exe=exe_abs or None,
+    )
+    if existing is None and app_name:
+        # Fallback: name-only match.
+        existing = vdf_binary.find_shortcut(data["shortcuts"], app_name=app_name)
+    if existing is None:
+        return None
+    _key, entry = existing
+    stored = entry.get("appid")
+    if isinstance(stored, int):
+        appid = as_unsigned_appid(stored)
+    else:
+        exe_field = str(entry.get("Exe") or entry.get("exe") or "")
+        name_field = str(entry.get("AppName") or entry.get("appname") or app_name)
+        appid = compute_shortcut_appid(exe_field, name_field)
+    return ShortcutResult(
+        created=False,
+        appid=appid,
+        steam_launch_id=to_steam_launch_id(appid),
+        shortcuts_path=str(path),
+        app_name=str(entry.get("AppName") or app_name),
+        exe=str(entry.get("Exe") or exe_path),
+    )
+
+
 def ensure_non_steam_shortcut(
     *,
     app_name: str,

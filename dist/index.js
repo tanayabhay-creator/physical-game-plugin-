@@ -405,21 +405,22 @@ function Content() {
             // (that is what was throwing "Python exception" on Deck).
             const next = await getStatus();
             setState(next);
-            if (next.plugin_build !== "2026-07-21-launch3") {
-                toaster.toast({
-                    title: "Old plugin build",
-                    body: `Build ${next.plugin_build || "unknown"} — reinstall/update the plugin.`,
-                });
-            }
+            // Prefer launching even if backend build field is missing (stale loader).
             const result = await launchSteamGame({
                 launch_options: "",
                 steam_app_id: next.last_steam_app_id,
                 shortcut_appid: next.last_shortcut_appid || next.last_steam_app_id,
                 vdf_launch_id: next.last_vdf_launch_id});
+            if (!next.plugin_build) {
+                toaster.toast({
+                    title: "Backend not updated",
+                    body: "UI is new but Python backend is old. Reinstall + restart Decky.",
+                });
+            }
             toaster.toast({
                 title: result.ok ? "Launching" : "Launch failed",
                 body: result.ok
-                    ? `${next.last_game || "game"} (build ${next.plugin_build || "?"})`
+                    ? `${next.last_game || "game"}`
                     : result.error || "Could not launch",
             });
         }
