@@ -130,15 +130,37 @@ class Plugin:
         force_recopy: bool = False,
     ) -> Dict[str, Any]:
         """Manually start SD -> SSD copy for a detected (or specified) mount."""
+        # Clear a stuck busy flag so the user can always retry from the UI.
+        async with self._lock:
+            if self._busy and not self._copying:
+                await self._log("Clearing stuck busy flag before manual transfer")
+                self._busy = False
+
         target = (mount_path or "").strip()
         if not target:
             detected = self._discover_game_mounts()
-            if not detected:
-                await self._log("Start Transfer failed: no game_info.json media found")
-                self._store.update(last_error="No game SD/USB with game_info.json is mounted")
-                await self._set_status("Error", progress=0.0)
-                return await self.get_status()
-            target = detected[0]
+            if detected:
+                target = detected[0]
+            elif self._store.settings.last_mount:
+                target = self._store.settings.last_mount
+                await self._log(f"No live detection; falling back to last_mount={target}")
+
+        if not target:
+            await self._log("Start Transfer failed: no game_info.json media found")
+            self._store.update(
+                last_error=(
+                    "No game SD/USB with game_info.json is mounted. "
+                    "Check the card root for game_info.json, then Rescan."
+                )
+            )
+            await self._set_status("Error", progress=0.0)
+            return await self.get_status()
+
+        if not Path(target).exists():
+            self._store.update(last_error=f"Mount path does not exist: {target}")
+            await self._set_status("Error", progress=0.0)
+            await self._log(f"Start Transfer failed: missing path {target}")
+            return await self.get_status()
 
         await self._log(
             f"Manual transfer requested for {target} "
@@ -149,6 +171,15 @@ class Plugin:
             force=True,
             force_recopy=bool(force_recopy),
         )
+        return await self.get_status()
+
+    async def reset_busy(self) -> Dict[str, Any]:
+        """Unstick the UI if a previous transfer left busy=true."""
+        async with self._lock:
+            self._busy = False
+            self._copying = False
+        await self._log("Busy state reset from UI")
+        await self._set_status("Ready", progress=0.0)
         return await self.get_status()
 
     async def process_mount(self, mount_path: str) -> Dict[str, Any]:

@@ -35,6 +35,7 @@ const startTransfer = callable<
   [mount_path?: string, force_recopy?: boolean],
   PluginStatus
 >("start_transfer");
+const resetBusy = callable<[], PluginStatus>("reset_busy");
 
 function Content() {
   const [state, setState] = useState<PluginStatus>(EMPTY_STATUS);
@@ -136,17 +137,14 @@ function Content() {
         title: "Physical Media Launcher",
         body: forceRecopy ? "Force re-copy starting…" : "Starting SD → SSD transfer…",
       });
-      const next = await startTransfer("", forceRecopy);
+      // Prefer an explicitly detected mount; otherwise let backend choose.
+      const mount = (state.detected_mounts && state.detected_mounts[0]) || state.last_mount || "";
+      const next = await startTransfer(mount, forceRecopy);
       setState(next);
       if (next.last_error) {
         toaster.toast({
           title: "Transfer failed",
           body: next.last_error,
-        });
-      } else if ((next.status || "").toLowerCase().includes("copy")) {
-        toaster.toast({
-          title: "Physical Media Launcher",
-          body: next.status,
         });
       } else {
         toaster.toast({
@@ -159,6 +157,18 @@ function Content() {
         title: "Physical Media Launcher",
         body: `Transfer failed: ${String(err)}`,
       });
+    }
+  };
+
+  const onResetBusy = async () => {
+    try {
+      setState(await resetBusy());
+      toaster.toast({
+        title: "Physical Media Launcher",
+        body: "Transfer state reset. Try Start Transfer again.",
+      });
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -190,7 +200,9 @@ function Content() {
         : "Waiting…";
 
   const detected = state.detected_mounts || [];
-  const canTransfer = detected.length > 0 && !state.busy && !state.copying;
+  // Only grey out while an actual copy is running. Detection alone must not
+  // permanently disable the button (that was locking users out).
+  const transferLocked = state.copying;
 
   return (
     <>
@@ -298,20 +310,16 @@ function Content() {
         <PanelSectionRow>
           <ButtonItem
             layout="below"
-            disabled={!canTransfer}
+            disabled={transferLocked}
             onClick={() => void onStartTransfer(false)}
           >
-            {canTransfer
-              ? "Start Transfer (SD → SSD)"
-              : state.busy
-                ? "Transfer in progress…"
-                : "Start Transfer (detect a card first)"}
+            {transferLocked ? "Transfer in progress…" : "Start Transfer (SD → SSD)"}
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem
             layout="below"
-            disabled={!canTransfer}
+            disabled={transferLocked}
             onClick={() => void onStartTransfer(true)}
           >
             Force Re-Copy (overwrite SSD)
@@ -320,6 +328,11 @@ function Content() {
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => void onRescan()}>
             Rescan inserted media
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => void onResetBusy()}>
+            Reset stuck transfer state
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>

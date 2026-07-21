@@ -8,11 +8,25 @@ from typing import Iterable, List, Optional
 
 
 def decky_user_home() -> Path:
-    """Return the interactive Steam Deck user home directory."""
-    for key in ("DECKY_USER_HOME", "HOME"):
+    """Return the interactive Steam Deck user home directory.
+
+    Decky plugins with the ``_root`` flag may run with HOME=/root. Always prefer
+    the real deck user home so media mounts resolve under /run/media/deck.
+    """
+    for key in ("DECKY_USER_HOME",):
         value = os.environ.get(key)
-        if value:
+        if value and value != "/root":
             return Path(value)
+
+    home = os.environ.get("HOME") or ""
+    if home and home not in {"/root", "/"} and Path(home, "homebrew").exists():
+        return Path(home)
+
+    if Path("/home/deck").is_dir():
+        return Path("/home/deck")
+
+    if home:
+        return Path(home)
     return Path("/home/deck")
 
 
@@ -82,14 +96,23 @@ def media_mount_roots() -> List[Path]:
     home = decky_user_home()
     user = home.name or "deck"
     roots = [
-        Path("/run/media") / user,
-        Path(f"/run/media/{user}"),
         Path("/run/media/deck"),
-        Path("/media") / user,
+        Path("/run/media") / user,
         Path("/media/deck"),
+        Path("/media") / user,
         Path("/mnt"),
     ]
-    # Preserve order, drop duplicates
+
+    # Also include every user directory under /run/media (covers odd setups).
+    run_media = Path("/run/media")
+    if run_media.is_dir():
+        try:
+            for child in run_media.iterdir():
+                if child.is_dir() and not child.name.startswith("."):
+                    roots.append(child)
+        except PermissionError:
+            pass
+
     unique: List[Path] = []
     seen = set()
     for root in roots:
@@ -114,6 +137,9 @@ def list_removable_mounts() -> List[Path]:
             continue
         for child in children:
             if not child.is_dir() or child.name.startswith("."):
+                continue
+            # Skip nested user roots already covered as roots themselves.
+            if child.parent == Path("/run/media"):
                 continue
             key = str(child)
             if key in seen:
