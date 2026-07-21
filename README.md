@@ -1,6 +1,6 @@
 # Physical Media Launcher
 
-Decky Loader plugin for Steam Deck that detects game SD cards / USB drives, copies the game folder to the internal SSD when needed, registers a Non-Steam Steam shortcut, and optionally launches it.
+**Version 1.0.0** — Decky Loader plugin for Steam Deck that detects game SD cards / USB drives, copies the game folder to the internal SSD when needed, registers a Non-Steam Steam shortcut, and optionally launches it.
 
 Use this with games you own and are allowed to copy (for example GOG / itch / DRM-free Windows builds). The plugin supports Proton-friendly launch options for Windows executables added as Non-Steam shortcuts.
 
@@ -87,7 +87,18 @@ See [`example/game_info.json`](example/game_info.json).
 
 ## Install / update on Steam Deck (Konsole)
 
-Always use this block (permission fix is included every time):
+### Recommended (v1.0.0 hard reinstall)
+
+```bash
+cd /tmp
+sudo chown -R deck:deck /home/deck/homebrew /home/deck/Downloads /home/deck/Games
+sudo rm -rf /tmp/pml-get /tmp/pml-hard-* /tmp/pml-work-deck-*
+mkdir -p /tmp/pml-get && cd /tmp/pml-get
+git clone --branch v1.0.0 --single-branch https://github.com/tanayabhay-creator/physical-game-plugin-.git repo
+bash repo/hard-reinstall-on-deck.sh
+```
+
+Or from the latest development branch:
 
 ```bash
 sudo chown -R deck:deck ~/homebrew ~/Downloads ~/Games 2>/dev/null || true
@@ -98,8 +109,8 @@ rm -rf physical-game-plugin-
 git clone https://github.com/tanayabhay-creator/physical-game-plugin-.git
 cd physical-game-plugin-
 git checkout cursor/physical-media-launcher-006e
-chmod +x ./update-on-deck.sh ./install-on-deck.sh
-./update-on-deck.sh
+chmod +x ./hard-reinstall-on-deck.sh ./update-on-deck.sh ./install-on-deck.sh
+./hard-reinstall-on-deck.sh
 ```
 
 Or, if the repo is already downloaded:
@@ -110,7 +121,7 @@ chmod +x ./update-on-deck.sh
 ./update-on-deck.sh
 ```
 
-`install-on-deck.sh` / `update-on-deck.sh` always run `chown` on `~/homebrew` before copying files.
+`install-on-deck.sh` / `update-on-deck.sh` / `hard-reinstall-on-deck.sh` always run `chown` on `~/homebrew` before copying files.
 
 ### Permission denied?
 

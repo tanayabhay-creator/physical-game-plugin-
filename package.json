@@ -1,6 +1,6 @@
 {
   "name": "physical-media-launcher",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Decky plugin that auto-detects game SD/USB media, copies to SSD, adds Non-Steam shortcuts, and launches.",
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SteamDeckHomebrew/decky-plugin-template.git"
+    "url": "git+https://github.com/tanayabhay-creator/physical-game-plugin-.git"
   },
   "keywords": [
     "decky",

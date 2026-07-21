@@ -7,7 +7,7 @@ USER_NAME="$(id -un)"
 HOME_DIR="${HOME:-/home/deck}"
 PLUGINS_DIR="${HOME_DIR}/homebrew/plugins"
 TARGET="${PLUGINS_DIR}/PhysicalMediaLauncher"
-BRANCH="cursor/physical-media-launcher-006e"
+BRANCH="${PML_BRANCH:-v1.0.0}"
 REPO_URL="https://github.com/tanayabhay-creator/physical-game-plugin-.git"
 WORK="/tmp/pml-hard-${USER_NAME}-$$"
 
@@ -74,10 +74,19 @@ if [[ ! -f "${TARGET}/main.py" ]]; then
 fi
 # Read build marker from the installed main.py so this script cannot drift.
 BUILD_MARKER="$(
-  grep -oE '2026-07-21-launch[0-9]+' "${TARGET}/main.py" | head -1 || true
+  grep -oE 'plugin_build["'\'']?\s*[:=]\s*["'\''][^"'\'']+["'\'']' "${TARGET}/main.py" \
+    | head -1 \
+    | grep -oE '"[^"]+"' \
+    | tr -d '"' \
+    || true
 )"
 if [[ -z "${BUILD_MARKER}" ]]; then
-  echo "ERROR: no plugin_build marker (2026-07-21-launchN) found in main.py"
+  BUILD_MARKER="$(
+    grep -oE '1\.[0-9]+\.[0-9]+|2026-07-21-launch[0-9]+' "${TARGET}/main.py" | head -1 || true
+  )"
+fi
+if [[ -z "${BUILD_MARKER}" ]]; then
+  echo "ERROR: no plugin_build marker found in main.py"
   echo "---- main.py plugin_build lines ----"
   grep -n "plugin_build" "${TARGET}/main.py" || true
   exit 1
