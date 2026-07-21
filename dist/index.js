@@ -88,6 +88,10 @@ function FaSdCard (props) {
 const EMPTY_STATUS = {
     status: "Ready",
     progress: 0,
+    progress_message: "",
+    bytes_copied: 0,
+    bytes_total: 0,
+    copying: false,
     auto_launch: true,
     last_game: "",
     last_mount: "",
@@ -95,6 +99,20 @@ const EMPTY_STATUS = {
     log_lines: [],
     busy: false,
 };
+function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) {
+        return "0 B";
+    }
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let value = bytes;
+    let idx = 0;
+    while (value >= 1024 && idx < units.length - 1) {
+        value /= 1024;
+        idx += 1;
+    }
+    const digits = idx === 0 ? 0 : value >= 10 ? 1 : 2;
+    return `${value.toFixed(digits)} ${units[idx]}`;
+}
 
 const getStatus = callable("get_status");
 const setAutoLaunch = callable("set_auto_launch");
@@ -116,12 +134,37 @@ function Content() {
             }
         };
         void refresh();
+        // Live updates while a copy is running (backend emits these frequently).
+        const onStatus = addEventListener("pml_status", (status) => {
+            if (mounted) {
+                setState(status);
+            }
+        });
+        const onProgress = addEventListener("pml_progress", (evt) => {
+            if (!mounted) {
+                return;
+            }
+            setState((prev) => ({
+                ...prev,
+                status: "Copying Game...",
+                progress: evt.progress,
+                progress_message: evt.progress_message,
+                bytes_copied: evt.bytes_copied,
+                bytes_total: evt.bytes_total,
+                copying: evt.copying,
+                last_game: evt.last_game || prev.last_game,
+                busy: true,
+            }));
+        });
+        // Slow poll as a fallback if an event is missed while the menu is closed.
         const timer = window.setInterval(() => {
             void refresh();
-        }, 2500);
+        }, 3000);
         return () => {
             mounted = false;
             window.clearInterval(timer);
+            removeEventListener("pml_status", onStatus);
+            removeEventListener("pml_progress", onProgress);
         };
     }, []);
     const onToggleAutoLaunch = async (checked) => {
@@ -165,7 +208,28 @@ function Content() {
     const logText = state.log_lines.length > 0
         ? state.log_lines.slice(-12).join("\n")
         : "No transfers yet. Insert an SD card with game_info.json on the root.";
-    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "Status", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Plugin status", description: state.busy ? "Working…" : "Idle", children: state.status }) }), (state.status.toLowerCase().includes("copy") || state.progress > 0) && (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ProgressBarWithInfo, { label: "Transfer", layout: "inline", bottomSeparator: "none", nProgress: state.progress, sOperationText: `${Math.round(state.progress)}%` }) })), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Last transferred game", children: state.last_game || "—" }) }), state.last_mount ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Last mount", children: state.last_mount }) })) : null, state.last_error ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Last error", description: state.last_error }) })) : null] }), SP_JSX.jsx(DFL.PanelSection, { title: "Auto-Launch", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Enable Auto-Launch on Insertion", description: "When enabled, detected games are launched in Steam after copy/shortcut setup.", checked: state.auto_launch, onChange: (checked) => {
+    const showProgress = state.copying ||
+        state.status.toLowerCase().includes("copy") ||
+        (state.progress > 0 && state.progress < 100) ||
+        (state.bytes_total > 0 && state.bytes_copied > 0);
+    const pct = Math.max(0, Math.min(100, Math.round(state.progress || 0)));
+    const sizeLabel = state.bytes_total > 0
+        ? `${formatBytes(state.bytes_copied)} / ${formatBytes(state.bytes_total)}`
+        : state.bytes_copied > 0
+            ? formatBytes(state.bytes_copied)
+            : "Waiting…";
+    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "Status", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Plugin status", description: state.busy ? "Working…" : "Idle", children: state.status }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Last transferred game", children: state.last_game || "—" }) }), state.last_mount ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Last mount", children: state.last_mount }) })) : null, state.last_error ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Last error", description: state.last_error }) })) : null] }), SP_JSX.jsx(DFL.PanelSection, { title: "Copy Progress", children: showProgress ? (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ProgressBarWithInfo, { label: "SD \u2192 SSD transfer", description: state.progress_message ||
+                                    (state.copying ? "Copying game files…" : "Transfer finished"), layout: "below", bottomSeparator: "none", nProgress: pct, indeterminate: state.copying && pct <= 0, sOperationText: `${pct}%`, sTimeRemaining: sizeLabel }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Copied", description: state.bytes_total > 0
+                                    ? `${pct}% of game data`
+                                    : state.copying
+                                        ? "Measuring / copying…"
+                                        : "—", children: sizeLabel }) }), state.progress_message ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Current file", children: SP_JSX.jsx("span", { style: {
+                                        display: "block",
+                                        maxWidth: "100%",
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                        whiteSpace: "nowrap",
+                                    }, children: state.progress_message }) }) })) : null] })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Transfer", description: "Progress appears here when a game is copying from SD/USB to the SSD.", children: "Idle" }) })) }), SP_JSX.jsx(DFL.PanelSection, { title: "Auto-Launch", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Enable Auto-Launch on Insertion", description: "When enabled, detected games are launched in Steam after copy/shortcut setup.", checked: state.auto_launch, onChange: (checked) => {
                             void onToggleAutoLaunch(checked);
                         } }) }) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Actions", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onRescan(), children: "Rescan inserted media" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onClearLog(), children: "Clear log" }) })] }), SP_JSX.jsx(DFL.PanelSection, { title: "Log", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("pre", { style: {
                             width: "100%",
@@ -180,13 +244,6 @@ function Content() {
                         }, children: logText }) }) })] }));
 }
 var index = definePlugin(() => {
-    const onStatus = addEventListener("pml_status", (status) => {
-        // Event-driven updates; the Content component also polls as a fallback.
-        console.log("pml_status", status);
-    });
-    const onProgress = addEventListener("pml_progress", (pct, message) => {
-        console.log("pml_progress", pct, message);
-    });
     const onLaunched = addEventListener("pml_launched", (gameName, launchId) => {
         toaster.toast({
             title: "Game Launched",
@@ -205,8 +262,6 @@ var index = definePlugin(() => {
         content: SP_JSX.jsx(Content, {}),
         icon: SP_JSX.jsx(FaSdCard, {}),
         onDismount() {
-            removeEventListener("pml_status", onStatus);
-            removeEventListener("pml_progress", onProgress);
             removeEventListener("pml_launched", onLaunched);
             removeEventListener("pml_error", onError);
         },

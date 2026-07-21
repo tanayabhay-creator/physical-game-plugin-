@@ -12,7 +12,8 @@ from typing import Awaitable, Callable, Optional
 
 logger = logging.getLogger("physical-media-launcher.transfer")
 
-ProgressCallback = Callable[[float, str], Awaitable[None] | None]
+# pct, message, bytes_copied, bytes_total
+ProgressCallback = Callable[[float, str, int, int], Awaitable[None] | None]
 
 
 @dataclass
@@ -29,7 +30,6 @@ def destination_ready(target_ssd_path: Path, exe_rel: str) -> bool:
     if not target_ssd_path.is_dir():
         return False
     exe = target_ssd_path / exe_rel
-    # Accept either the exact exe or a non-empty destination folder.
     if exe.is_file():
         return True
     try:
@@ -46,7 +46,7 @@ async def copy_game_tree(
     *,
     progress_cb: Optional[ProgressCallback] = None,
 ) -> TransferResult:
-    """Copy source_dir -> dest_dir with coarse progress updates.
+    """Copy source_dir -> dest_dir with byte-level progress updates.
 
     Uses a staging directory next to the destination and renames into place
     when complete, so a partial copy never looks "ready".
@@ -60,38 +60,64 @@ async def copy_game_tree(
     total_bytes = _dir_size(source_dir)
     copied = 0
     started = time.monotonic()
+    last_report = 0.0
 
     staging = dest_dir.parent / f".{dest_dir.name}.pml-staging"
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True, exist_ok=True)
 
-    async def report(pct: float, message: str) -> None:
+    async def report(pct: float, message: str, *, force: bool = False) -> None:
+        nonlocal last_report
         if progress_cb is None:
             return
-        result = progress_cb(pct, message)
+        now = time.monotonic()
+        # Throttle UI updates (~4/sec) unless forced (start/finish).
+        if not force and (now - last_report) < 0.25 and pct < 99.0:
+            return
+        last_report = now
+        result = progress_cb(pct, message, copied, total_bytes)
         if hasattr(result, "__await__"):
             await result  # type: ignore[misc]
 
-    await report(0.0, f"Starting copy to {dest_dir}")
+    await report(0.0, f"Starting copy to {dest_dir}", force=True)
 
     for root, dirs, files in os.walk(source_dir):
         rel_root = Path(root).relative_to(source_dir)
         target_root = staging / rel_root
         target_root.mkdir(parents=True, exist_ok=True)
-        # Skip junk that often appears on camera/SD cards
-        dirs[:] = [d for d in dirs if d not in {".Trash-1000", "$RECYCLE.BIN", "System Volume Information"}]
+        dirs[:] = [
+            d
+            for d in dirs
+            if d not in {".Trash-1000", "$RECYCLE.BIN", "System Volume Information"}
+        ]
 
         for name in files:
             src = Path(root) / name
             dst = target_root / name
-            shutil.copy2(src, dst)
+            rel_name = rel_root / name
             try:
-                copied += src.stat().st_size
+                file_size = src.stat().st_size
             except OSError:
-                pass
-            pct = (copied / total_bytes * 100.0) if total_bytes else 100.0
-            await report(min(pct, 99.5), f"Copying {rel_root / name}")
+                file_size = 0
+
+            # Stream large files so the bar moves during multi-GB copies.
+            if file_size >= 8 * 1024 * 1024:
+                with src.open("rb") as rf, dst.open("wb") as wf:
+                    while True:
+                        chunk = rf.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        wf.write(chunk)
+                        copied += len(chunk)
+                        pct = (copied / total_bytes * 100.0) if total_bytes else 100.0
+                        await report(min(pct, 99.5), f"Copying {rel_name}")
+                shutil.copystat(src, dst, follow_symlinks=False)
+            else:
+                shutil.copy2(src, dst)
+                copied += file_size
+                pct = (copied / total_bytes * 100.0) if total_bytes else 100.0
+                await report(min(pct, 99.5), f"Copying {rel_name}")
 
     if dest_dir.exists():
         shutil.rmtree(dest_dir)
@@ -99,7 +125,7 @@ async def copy_game_tree(
     os.replace(staging, dest_dir)
 
     duration = time.monotonic() - started
-    await report(100.0, "Copy complete")
+    await report(100.0, "Copy complete", force=True)
     logger.info(
         "Copied %s -> %s (%s bytes in %.1fs)",
         source_dir,

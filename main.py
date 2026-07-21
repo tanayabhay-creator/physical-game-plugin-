@@ -48,6 +48,10 @@ class Plugin:
         self._lock = asyncio.Lock()
         self._status = self._store.settings.last_status or "Ready"
         self._progress = 0.0
+        self._progress_message = ""
+        self._bytes_copied = 0
+        self._bytes_total = 0
+        self._copying = False
         self._watcher = MediaWatcher(
             self._on_mount,
             poll_interval_sec=self._store.settings.poll_interval_sec,
@@ -73,6 +77,10 @@ class Plugin:
         return {
             "status": self._status,
             "progress": self._progress,
+            "progress_message": self._progress_message,
+            "bytes_copied": self._bytes_copied,
+            "bytes_total": self._bytes_total,
+            "copying": self._copying,
             "auto_launch": s.auto_launch,
             "last_game": s.last_game,
             "last_mount": s.last_mount,
@@ -135,28 +143,57 @@ class Plugin:
 
             if destination_ready(dest, exe_rel):
                 await self._log(f"Game already on SSD at {dest}; skipping copy")
+                self._copying = False
+                self._progress_message = "Already on SSD — copy skipped"
+                self._bytes_copied = 0
+                self._bytes_total = 0
                 await self._set_status("Game already on SSD", progress=100.0)
             else:
                 if not info.source_exe.is_file():
                     raise FileNotFoundError(
                         f"Source executable not found on media: {info.source_exe}"
                     )
+                self._copying = True
+                self._progress_message = "Preparing copy..."
+                self._bytes_copied = 0
+                self._bytes_total = 0
                 await self._set_status("Copying Game...", progress=0.0)
                 await self._emit_status()
 
-                async def on_progress(pct: float, message: str) -> None:
+                async def on_progress(
+                    pct: float,
+                    message: str,
+                    bytes_copied: int,
+                    bytes_total: int,
+                ) -> None:
                     self._progress = pct
-                    # Keep UI snappy without flooding events.
-                    if int(pct) % 5 == 0 or pct >= 99.0:
-                        await self._set_status("Copying Game...", progress=pct, persist=False)
-                        await decky.emit("pml_progress", pct, message)
-                        await self._emit_status()
+                    self._progress_message = message
+                    self._bytes_copied = int(bytes_copied)
+                    self._bytes_total = int(bytes_total)
+                    self._copying = True
+                    await self._set_status("Copying Game...", progress=pct, persist=False)
+                    await decky.emit(
+                        "pml_progress",
+                        {
+                            "progress": pct,
+                            "progress_message": message,
+                            "bytes_copied": bytes_copied,
+                            "bytes_total": bytes_total,
+                            "copying": True,
+                            "last_game": info.game_name,
+                        },
+                    )
+                    await self._emit_status()
 
                 result = await copy_game_tree(
                     info.source_game_dir,
                     dest,
                     progress_cb=on_progress,
                 )
+                self._copying = False
+                self._progress_message = "Copy complete"
+                self._bytes_copied = result.bytes_copied
+                self._bytes_total = max(self._bytes_total, result.bytes_copied)
                 await self._log(
                     f"Copied {info.game_name}: {result.bytes_copied} bytes "
                     f"in {result.duration_sec:.1f}s -> {result.destination}"
@@ -200,12 +237,14 @@ class Plugin:
             await self._emit_status()
         except Exception as exc:  # noqa: BLE001 - surface to UI
             logger.exception("Failed processing mount %s", mount)
+            self._copying = False
             self._store.update(last_error=str(exc))
             await self._set_status("Error", progress=self._progress)
             await self._log(f"ERROR: {exc}")
             await decky.emit("pml_error", str(exc))
             await self._emit_status()
         finally:
+            self._copying = False
             async with self._lock:
                 self._busy = False
 

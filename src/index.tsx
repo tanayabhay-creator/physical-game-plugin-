@@ -17,7 +17,12 @@ import {
 import { useEffect, useState } from "react";
 import { FaSdCard } from "react-icons/fa";
 
-import { EMPTY_STATUS, PluginStatus } from "./types";
+import {
+  EMPTY_STATUS,
+  formatBytes,
+  PluginStatus,
+  ProgressEvent,
+} from "./types";
 
 const getStatus = callable<[], PluginStatus>("get_status");
 const setAutoLaunch = callable<[enabled: boolean], PluginStatus>("set_auto_launch");
@@ -42,13 +47,41 @@ function Content() {
     };
 
     void refresh();
+
+    // Live updates while a copy is running (backend emits these frequently).
+    const onStatus = addEventListener<[PluginStatus]>("pml_status", (status) => {
+      if (mounted) {
+        setState(status);
+      }
+    });
+
+    const onProgress = addEventListener<[ProgressEvent]>("pml_progress", (evt) => {
+      if (!mounted) {
+        return;
+      }
+      setState((prev) => ({
+        ...prev,
+        status: "Copying Game...",
+        progress: evt.progress,
+        progress_message: evt.progress_message,
+        bytes_copied: evt.bytes_copied,
+        bytes_total: evt.bytes_total,
+        copying: evt.copying,
+        last_game: evt.last_game || prev.last_game,
+        busy: true,
+      }));
+    });
+
+    // Slow poll as a fallback if an event is missed while the menu is closed.
     const timer = window.setInterval(() => {
       void refresh();
-    }, 2500);
+    }, 3000);
 
     return () => {
       mounted = false;
       window.clearInterval(timer);
+      removeEventListener("pml_status", onStatus);
+      removeEventListener("pml_progress", onProgress);
     };
   }, []);
 
@@ -96,6 +129,20 @@ function Content() {
       ? state.log_lines.slice(-12).join("\n")
       : "No transfers yet. Insert an SD card with game_info.json on the root.";
 
+  const showProgress =
+    state.copying ||
+    state.status.toLowerCase().includes("copy") ||
+    (state.progress > 0 && state.progress < 100) ||
+    (state.bytes_total > 0 && state.bytes_copied > 0);
+
+  const pct = Math.max(0, Math.min(100, Math.round(state.progress || 0)));
+  const sizeLabel =
+    state.bytes_total > 0
+      ? `${formatBytes(state.bytes_copied)} / ${formatBytes(state.bytes_total)}`
+      : state.bytes_copied > 0
+        ? formatBytes(state.bytes_copied)
+        : "Waiting…";
+
   return (
     <>
       <PanelSection title="Status">
@@ -104,18 +151,6 @@ function Content() {
             {state.status}
           </Field>
         </PanelSectionRow>
-
-        {(state.status.toLowerCase().includes("copy") || state.progress > 0) && (
-          <PanelSectionRow>
-            <ProgressBarWithInfo
-              label="Transfer"
-              layout="inline"
-              bottomSeparator="none"
-              nProgress={state.progress}
-              sOperationText={`${Math.round(state.progress)}%`}
-            />
-          </PanelSectionRow>
-        )}
 
         <PanelSectionRow>
           <Field label="Last transferred game">
@@ -134,6 +169,68 @@ function Content() {
             <Field label="Last error" description={state.last_error} />
           </PanelSectionRow>
         ) : null}
+      </PanelSection>
+
+      <PanelSection title="Copy Progress">
+        {showProgress ? (
+          <>
+            <PanelSectionRow>
+              <ProgressBarWithInfo
+                label="SD → SSD transfer"
+                description={
+                  state.progress_message ||
+                  (state.copying ? "Copying game files…" : "Transfer finished")
+                }
+                layout="below"
+                bottomSeparator="none"
+                nProgress={pct}
+                indeterminate={state.copying && pct <= 0}
+                sOperationText={`${pct}%`}
+                sTimeRemaining={sizeLabel}
+              />
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <Field
+                label="Copied"
+                description={
+                  state.bytes_total > 0
+                    ? `${pct}% of game data`
+                    : state.copying
+                      ? "Measuring / copying…"
+                      : "—"
+                }
+              >
+                {sizeLabel}
+              </Field>
+            </PanelSectionRow>
+            {state.progress_message ? (
+              <PanelSectionRow>
+                <Field label="Current file">
+                  <span
+                    style={{
+                      display: "block",
+                      maxWidth: "100%",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {state.progress_message}
+                  </span>
+                </Field>
+              </PanelSectionRow>
+            ) : null}
+          </>
+        ) : (
+          <PanelSectionRow>
+            <Field
+              label="Transfer"
+              description="Progress appears here when a game is copying from SD/USB to the SSD."
+            >
+              Idle
+            </Field>
+          </PanelSectionRow>
+        )}
       </PanelSection>
 
       <PanelSection title="Auto-Launch">
@@ -186,18 +283,6 @@ function Content() {
 }
 
 export default definePlugin(() => {
-  const onStatus = addEventListener<[PluginStatus]>("pml_status", (status) => {
-    // Event-driven updates; the Content component also polls as a fallback.
-    console.log("pml_status", status);
-  });
-
-  const onProgress = addEventListener<[number, string]>(
-    "pml_progress",
-    (pct, message) => {
-      console.log("pml_progress", pct, message);
-    }
-  );
-
   const onLaunched = addEventListener<[string, number]>(
     "pml_launched",
     (gameName, launchId) => {
@@ -221,8 +306,6 @@ export default definePlugin(() => {
     content: <Content />,
     icon: <FaSdCard />,
     onDismount() {
-      removeEventListener("pml_status", onStatus);
-      removeEventListener("pml_progress", onProgress);
       removeEventListener("pml_launched", onLaunched);
       removeEventListener("pml_error", onError);
     },
