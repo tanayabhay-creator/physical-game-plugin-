@@ -85,61 +85,37 @@ See [`example/game_info.json`](example/game_info.json).
 - Last transferred game + rolling log
 - Manual **Rescan inserted media**
 
-## Install (developer)
+## Install / update on Steam Deck (Konsole)
 
-1. Install [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader).
-2. In Desktop Mode Konsole, from this repo:
-
-```bash
-chmod +x ./install-on-deck.sh
-./install-on-deck.sh
-```
-
-Or manually:
+Always use this block (permission fix is included every time):
 
 ```bash
-mkdir -p ~/homebrew/plugins
-rm -rf ~/homebrew/plugins/PhysicalMediaLauncher
-cp -a . ~/homebrew/plugins/PhysicalMediaLauncher
-mkdir -p ~/Games
+sudo chown -R deck:deck ~/homebrew ~/Downloads ~/Games 2>/dev/null || true
+sudo chmod -R u+rwX ~/homebrew
+mkdir -p ~/Downloads ~/Games
+cd ~/Downloads
+rm -rf physical-game-plugin-
+git clone https://github.com/tanayabhay-creator/physical-game-plugin-.git
+cd physical-game-plugin-
+git checkout cursor/physical-media-launcher-006e
+chmod +x ./update-on-deck.sh ./install-on-deck.sh
+./update-on-deck.sh
 ```
 
-3. Return to Game Mode and reload Decky plugins.
-
-### Permission denied in Konsole?
-
-SteamOS keeps the **system disk read-only**. Do **not** install into `/usr/local` or `/etc` unless you intentionally unlock the rootfs.
-
-**Plugin install (most common fix):**
+Or, if the repo is already downloaded:
 
 ```bash
-# Decky must exist first
-ls ~/homebrew
-
-# If "Permission denied" on ~/homebrew:
-sudo chown -R deck:deck ~/homebrew
-mkdir -p ~/homebrew/plugins
-mkdir -p ~/Games
+cd ~/Downloads/physical-game-plugin-
+chmod +x ./update-on-deck.sh
+./update-on-deck.sh
 ```
 
-**Game copy destination** in `game_info.json` must be under your home, e.g.:
+`install-on-deck.sh` / `update-on-deck.sh` always run `chown` on `~/homebrew` before copying files.
 
-```json
-"TargetSSDPath": "/home/deck/Games/MyGame"
-```
+### Permission denied?
 
-Avoid paths like `/usr/...`, `/opt/...`, or `/run/media/...` as the SSD target.
-
-**Optional udev helpers** (not required). Only if you really want them:
-
-```bash
-sudo steamos-readonly disable
-sudo mkdir -p /etc/udev/rules.d
-# point the rule at the helper inside the plugin folder, then:
-sudo steamos-readonly enable
-```
-
-Prefer skipping udev — the plugin already polls `/run/media/deck`.
+SteamOS keeps the system disk read-only. Never install into `/usr/local`.
+These scripts only write under `~/homebrew/plugins` and `~/Games`.
 
 ## Tests
 
