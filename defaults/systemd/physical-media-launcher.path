@@ -1,0 +1,11 @@
+# Optional systemd path unit if you prefer mount-triggered scans outside Decky.
+# Most users should rely on the plugin's built-in poller instead.
+[Unit]
+Description=Watch SteamOS media mounts for Physical Media Launcher
+
+[Path]
+PathChanged=/run/media/deck
+PathExistsGlob=/run/media/deck/*
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,8 @@
+{
+  "GameName": "PML Test Game",
+  "GameFolder": "TestGame",
+  "ExePath": "game.sh",
+  "LaunchOptions": "",
+  "TargetSSDPath": "/home/deck/Games/PMLTestGame",
+  "AutoLaunch": true
+}

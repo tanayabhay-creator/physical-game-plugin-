@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Bulletproof Steam Deck reinstall.
+# Only touches ownership/permissions for Physical Media Launcher — never
+# recursively chmod's other Decky plugins (that caused Operation not permitted).
+set -euo pipefail
+
+USER_NAME="$(id -un)"
+HOME_DIR="${HOME:-/home/deck}"
+REPO_URL="https://github.com/tanayabhay-creator/physical-game-plugin-.git"
+BRANCH="cursor/physical-media-launcher-006e"
+PLUGIN_NAME="PhysicalMediaLauncher"
+HOMEBREW_DIR="${HOME_DIR}/homebrew"
+PLUGINS_DIR="${HOMEBREW_DIR}/plugins"
+TARGET="${PLUGINS_DIR}/${PLUGIN_NAME}"
+WORK_DIR="/tmp/pml-work-${USER_NAME}-$$"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "======================================================"
+echo " Physical Media Launcher — SteamOS safe installer"
+echo "======================================================"
+echo "User: ${USER_NAME}"
+echo "Home: ${HOME_DIR}"
+echo
+
+if [[ "${USER_NAME}" == "root" ]]; then
+  echo "ERROR: Do not run this as root / with sudo."
+  exit 1
+fi
+
+cd /tmp
+
+echo "==> [1/5] Ensuring Decky plugin folder is writable..."
+if [[ ! -d "${HOMEBREW_DIR}" ]]; then
+  echo "ERROR: ${HOMEBREW_DIR} not found. Install Decky Loader first."
+  exit 1
+fi
+
+# Only fix what we need — do NOT chmod -R the entire homebrew tree.
+sudo chown "${USER_NAME}:${USER_NAME}" "${HOMEBREW_DIR}" 2>/dev/null || true
+sudo chown "${USER_NAME}:${USER_NAME}" "${PLUGINS_DIR}" 2>/dev/null || true
+mkdir -p "${PLUGINS_DIR}" "${HOME_DIR}/Games" "${HOME_DIR}/Downloads"
+sudo chown "${USER_NAME}:${USER_NAME}" "${PLUGINS_DIR}" "${HOME_DIR}/Games" "${HOME_DIR}/Downloads" 2>/dev/null || true
+
+# If an old copy of OUR plugin is root-owned, fix only that folder.
+if [[ -e "${TARGET}" ]]; then
+  sudo chown -R "${USER_NAME}:${USER_NAME}" "${TARGET}" 2>/dev/null || true
+fi
+
+if [[ ! -w "${PLUGINS_DIR}" ]]; then
+  echo "ERROR: cannot write to ${PLUGINS_DIR}"
+  echo "Run: sudo chown deck:deck ${PLUGINS_DIR}"
+  exit 1
+fi
+
+SRC_DIR=""
+if [[ -f "${SCRIPT_DIR}/main.py" && -f "${SCRIPT_DIR}/plugin.json" ]]; then
+  echo "==> [2/5] Using already-downloaded plugin at:"
+  echo "    ${SCRIPT_DIR}"
+  SRC_DIR="${SCRIPT_DIR}"
+else
+  echo "==> [2/5] Downloading plugin into ${WORK_DIR} ..."
+  rm -rf "${WORK_DIR}"
+  mkdir -p "${WORK_DIR}"
+  git clone --branch "${BRANCH}" --single-branch "${REPO_URL}" "${WORK_DIR}/repo"
+  SRC_DIR="${WORK_DIR}/repo"
+fi
+
+echo "==> [3/5] Installing into ${TARGET} ..."
+rm -rf "${TARGET}"
+mkdir -p "${TARGET}"
+
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a \
+    --exclude '.git' \
+    --exclude 'node_modules' \
+    --exclude '.rollup.cache' \
+    --exclude '__pycache__' \
+    --exclude 'tests' \
+    "${SRC_DIR}/" "${TARGET}/"
+else
+  cp -a "${SRC_DIR}/." "${TARGET}/"
+  rm -rf "${TARGET}/.git" "${TARGET}/node_modules" "${TARGET}/.rollup.cache" \
+    "${TARGET}/__pycache__" "${TARGET}/tests" || true
+fi
+
+# Ownership/permissions ONLY for our plugin.
+sudo chown -R "${USER_NAME}:${USER_NAME}" "${TARGET}" 2>/dev/null || true
+chmod -R u+rwX "${TARGET}" 2>/dev/null || true
+
+echo "==> [4/5] Verifying ..."
+if [[ ! -f "${TARGET}/main.py" ]]; then
+  echo "ERROR: main.py missing after install"
+  exit 1
+fi
+if [[ ! -f "${TARGET}/dist/index.js" ]]; then
+  echo "WARNING: dist/index.js missing (UI may not load)"
+fi
+
+echo "==> [5/5] Cleanup"
+rm -rf "${WORK_DIR}" || true
+
+echo
+echo "======================================================"
+echo " SUCCESS — plugin installed to:"
+echo " ${TARGET}"
+echo "======================================================"
+echo "Next:"
+echo "  1. Go to Game Mode"
+echo "  2. Decky menu -> reload plugins"
+echo "  3. Open Physical Media Launcher"
+echo "  4. Rescan -> Start Transfer"
+echo

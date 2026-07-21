@@ -1,0 +1,7 @@
+[Unit]
+Description=Physical Media Launcher mount nudge
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/touch /tmp/physical-media-launcher/media-changed

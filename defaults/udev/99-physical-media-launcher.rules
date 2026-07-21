@@ -1,0 +1,18 @@
+# Optional: faster SD/USB detection for Physical Media Launcher.
+# NOT required — the plugin already polls /run/media/<user>.
+#
+# SteamOS has a read-only root filesystem. Prefer skipping udev entirely.
+# If you still want it, disable readonly first, then install a rule that
+# calls the helper from the plugin directory (NOT /usr/local):
+#
+#   HELPER="$HOME/homebrew/plugins/PhysicalMediaLauncher/defaults/bin/pml-media-event.sh"
+#   sudo steamos-readonly disable
+#   sudo tee /etc/udev/rules.d/99-physical-media-launcher.rules >/dev/null <<EOF
+#   ACTION=="add", SUBSYSTEM=="block", ENV{ID_FS_USAGE}=="filesystem", RUN+="$HELPER add %E{DEVNAME}"
+#   ACTION=="remove", SUBSYSTEM=="block", RUN+="$HELPER remove %E{DEVNAME}"
+#   EOF
+#   sudo udevadm control --reload-rules
+#   sudo steamos-readonly enable
+
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_FS_USAGE}=="filesystem", RUN+="/home/deck/homebrew/plugins/PhysicalMediaLauncher/defaults/bin/pml-media-event.sh add %E{DEVNAME}"
+ACTION=="remove", SUBSYSTEM=="block", RUN+="/home/deck/homebrew/plugins/PhysicalMediaLauncher/defaults/bin/pml-media-event.sh remove %E{DEVNAME}"
