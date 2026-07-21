@@ -31,10 +31,9 @@ const rescanMedia = callable<
   [],
   PluginStatus & { mounts: string[]; all_mounts?: string[] }
 >("rescan_media");
-const startTransfer = callable<
-  [mount_path?: string, force_recopy?: boolean],
-  PluginStatus
->("start_transfer");
+const startTransfer = callable<[mount_path: string, force_recopy: boolean], PluginStatus>(
+  "start_transfer"
+);
 const resetBusy = callable<[], PluginStatus>("reset_busy");
 
 function Content() {
@@ -137,8 +136,8 @@ function Content() {
         title: "Physical Media Launcher",
         body: forceRecopy ? "Force re-copy starting…" : "Starting SD → SSD transfer…",
       });
-      // Prefer an explicitly detected mount; otherwise let backend choose.
-      const mount = (state.detected_mounts && state.detected_mounts[0]) || state.last_mount || "";
+      const mount =
+        (state.detected_mounts && state.detected_mounts[0]) || state.last_mount || "";
       const next = await startTransfer(mount, forceRecopy);
       setState(next);
       if (next.last_error) {
@@ -146,17 +145,28 @@ function Content() {
           title: "Transfer failed",
           body: next.last_error,
         });
-      } else {
-        toaster.toast({
-          title: "Physical Media Launcher",
-          body: next.status || "Transfer finished",
-        });
+        return;
       }
-    } catch (err) {
       toaster.toast({
         title: "Physical Media Launcher",
-        body: `Transfer failed: ${String(err)}`,
+        body: "Transfer started — watch Copy Progress below.",
       });
+    } catch (err) {
+      // Decky sometimes wraps backend failures as a generic "Python exception".
+      // Pull the real reason from status/log if possible.
+      try {
+        const next = await getStatus();
+        setState(next);
+        toaster.toast({
+          title: "Transfer failed",
+          body: next.last_error || String(err),
+        });
+      } catch {
+        toaster.toast({
+          title: "Transfer failed",
+          body: String(err),
+        });
+      }
     }
   };
 

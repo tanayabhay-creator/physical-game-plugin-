@@ -217,7 +217,6 @@ function Content() {
                 title: "Physical Media Launcher",
                 body: forceRecopy ? "Force re-copy starting…" : "Starting SD → SSD transfer…",
             });
-            // Prefer an explicitly detected mount; otherwise let backend choose.
             const mount = (state.detected_mounts && state.detected_mounts[0]) || state.last_mount || "";
             const next = await startTransfer(mount, forceRecopy);
             setState(next);
@@ -226,19 +225,30 @@ function Content() {
                     title: "Transfer failed",
                     body: next.last_error,
                 });
+                return;
             }
-            else {
-                toaster.toast({
-                    title: "Physical Media Launcher",
-                    body: next.status || "Transfer finished",
-                });
-            }
-        }
-        catch (err) {
             toaster.toast({
                 title: "Physical Media Launcher",
-                body: `Transfer failed: ${String(err)}`,
+                body: "Transfer started — watch Copy Progress below.",
             });
+        }
+        catch (err) {
+            // Decky sometimes wraps backend failures as a generic "Python exception".
+            // Pull the real reason from status/log if possible.
+            try {
+                const next = await getStatus();
+                setState(next);
+                toaster.toast({
+                    title: "Transfer failed",
+                    body: next.last_error || String(err),
+                });
+            }
+            catch {
+                toaster.toast({
+                    title: "Transfer failed",
+                    body: String(err),
+                });
+            }
         }
     };
     const onResetBusy = async () => {

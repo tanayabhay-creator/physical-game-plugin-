@@ -126,52 +126,125 @@ class Plugin:
 
     async def start_transfer(
         self,
-        mount_path: str = "",
-        force_recopy: bool = False,
+        mount_path: str,
+        force_recopy: bool,
     ) -> Dict[str, Any]:
-        """Manually start SD -> SSD copy for a detected (or specified) mount."""
-        # Clear a stuck busy flag so the user can always retry from the UI.
-        async with self._lock:
-            if self._busy and not self._copying:
-                await self._log("Clearing stuck busy flag before manual transfer")
-                self._busy = False
+        """Start SD -> SSD copy in the background and return immediately.
 
-        target = (mount_path or "").strip()
-        if not target:
-            detected = self._discover_game_mounts()
-            if detected:
-                target = detected[0]
-            elif self._store.settings.last_mount:
-                target = self._store.settings.last_mount
-                await self._log(f"No live detection; falling back to last_mount={target}")
+        Decky RPC calls can time out / surface as a generic "Python exception"
+        if we await a multi-GB copy inside the callable. Progress continues via
+        pml_progress / pml_status events.
+        """
+        try:
+            # Clear a stuck busy flag so the user can always retry from the UI.
+            async with self._lock:
+                if self._busy and not self._copying:
+                    await self._log("Clearing stuck busy flag before manual transfer")
+                    self._busy = False
+                if self._busy or self._copying:
+                    self._store.update(last_error="A transfer is already running")
+                    return await self.get_status()
 
-        if not target:
-            await self._log("Start Transfer failed: no game_info.json media found")
-            self._store.update(
-                last_error=(
+            target = str(mount_path or "").strip()
+            if not target:
+                detected = self._discover_game_mounts()
+                if detected:
+                    target = detected[0]
+                elif self._store.settings.last_mount:
+                    target = self._store.settings.last_mount
+                    await self._log(
+                        f"No live detection; falling back to last_mount={target}"
+                    )
+
+            if not target:
+                msg = (
                     "No game SD/USB with game_info.json is mounted. "
                     "Check the card root for game_info.json, then Rescan."
                 )
+                await self._log(f"Start Transfer failed: {msg}")
+                self._store.update(last_error=msg)
+                await self._set_status("Error", progress=0.0)
+                return await self.get_status()
+
+            mount = Path(target)
+            if not mount.exists():
+                msg = f"Mount path does not exist: {target}"
+                self._store.update(last_error=msg)
+                await self._set_status("Error", progress=0.0)
+                await self._log(f"Start Transfer failed: {msg}")
+                return await self.get_status()
+
+            # Validate metadata quickly so the UI gets a useful error immediately.
+            try:
+                info = load_game_info(mount)
+            except GameInfoError as exc:
+                msg = f"Invalid game_info.json: {exc}"
+                self._store.update(last_error=msg)
+                await self._set_status("Error", progress=0.0)
+                await self._log(msg)
+                return await self.get_status()
+
+            if not info.source_game_dir.is_dir():
+                msg = (
+                    f"GameFolder not found on SD: {info.source_game_dir}. "
+                    "Fix GameFolder in game_info.json."
+                )
+                self._store.update(last_error=msg)
+                await self._set_status("Error", progress=0.0)
+                await self._log(msg)
+                return await self.get_status()
+
+            if not info.source_exe.is_file():
+                msg = (
+                    f"Exe not found on SD: {info.source_exe}. "
+                    "Fix ExePath in game_info.json (relative to GameFolder)."
+                )
+                self._store.update(last_error=msg)
+                await self._set_status("Error", progress=0.0)
+                await self._log(msg)
+                return await self.get_status()
+
+            self._store.update(
+                last_mount=str(mount),
+                last_game=info.game_name,
+                last_error="",
             )
-            await self._set_status("Error", progress=0.0)
-            return await self.get_status()
+            self._copying = True
+            self._progress = 0.0
+            self._progress_message = "Starting transfer..."
+            await self._set_status("Copying Game...", progress=0.0)
+            await self._log(
+                f"Manual transfer queued for {target} "
+                f"(force_recopy={bool(force_recopy)})"
+            )
+            await self._emit_status()
 
-        if not Path(target).exists():
-            self._store.update(last_error=f"Mount path does not exist: {target}")
-            await self._set_status("Error", progress=0.0)
-            await self._log(f"Start Transfer failed: missing path {target}")
+            loop = getattr(self, "loop", None) or asyncio.get_event_loop()
+            loop.create_task(
+                self._handle_mount(
+                    mount,
+                    force=True,
+                    force_recopy=bool(force_recopy),
+                ),
+                name="pml-start-transfer",
+            )
             return await self.get_status()
+        except Exception as exc:  # noqa: BLE001 - never raise into Decky RPC
+            import traceback
 
-        await self._log(
-            f"Manual transfer requested for {target} "
-            f"(force_recopy={bool(force_recopy)})"
-        )
-        await self._handle_mount(
-            Path(target),
-            force=True,
-            force_recopy=bool(force_recopy),
-        )
-        return await self.get_status()
+            tb = traceback.format_exc()
+            msg = f"{type(exc).__name__}: {exc}"
+            logger.exception("start_transfer failed")
+            try:
+                self._copying = False
+                self._busy = False
+                self._store.update(last_error=msg)
+                self._store.append_log(f"ERROR: {msg}")
+                self._store.append_log(tb[-1500:])
+                await self._set_status("Error", progress=0.0)
+            except Exception:
+                pass
+            return await self.get_status()
 
     async def reset_busy(self) -> Dict[str, Any]:
         """Unstick the UI if a previous transfer left busy=true."""
