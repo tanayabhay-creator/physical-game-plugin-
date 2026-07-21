@@ -623,9 +623,9 @@ class Plugin:
             await self._emit_status()
             await decky.emit("pml_add_to_steam", steam_payload)
             await self._log(
-                f"[launch9] Live AddShortcut requested for '{info.game_name}' "
+                f"[launch10] Live AddShortcut requested for '{info.game_name}' "
                 f"(vdf_appid={shortcut_appid_s}, saved_steam_app_id={saved_app_id}, "
-                f"should_launch={should_launch})"
+                f"auto_launch={should_launch})"
             )
 
             # Wait for frontend AddShortcut → report_steam_appid.
