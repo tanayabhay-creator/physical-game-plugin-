@@ -183,17 +183,34 @@ function Content() {
       setState(next);
 
       // Prefer launching even if backend build field is missing (stale loader).
+      const exe = next.last_exe || "/home/deck/Games/Silksong/Silksong.exe";
+      const startDir = exe.includes("/")
+        ? exe.slice(0, exe.lastIndexOf("/"))
+        : "/home/deck/Games/Silksong";
+
       const result = await launchSteamGame({
         game_name: next.last_game || "Silksong",
-        exe: next.last_exe || "/home/deck/Games/Silksong/Silksong.exe",
-        start_dir: "",
+        exe,
+        start_dir: startDir,
         launch_options: "",
+        compat_tool: "proton_experimental",
         steam_app_id: next.last_steam_app_id,
         shortcut_appid: next.last_shortcut_appid || next.last_steam_app_id,
-        vdf_launch_id: next.last_vdf_launch_id,
         should_launch: true,
         already_installed: true,
       });
+
+      if (result.ok && result.appId) {
+        try {
+          await reportSteamAppId(
+            next.last_game || "Silksong",
+            exe,
+            result.appId
+          );
+        } catch (err) {
+          console.warn("report_steam_appid failed", err);
+        }
+      }
 
       if (!next.plugin_build) {
         toaster.toast({
@@ -203,9 +220,11 @@ function Content() {
       }
 
       toaster.toast({
-        title: result.ok ? "Launching" : "Launch failed",
+        title: result.ok ? "Launching with Proton" : "Launch failed",
         body: result.ok
-          ? `${next.last_game || "game"}`
+          ? `${next.last_game || "game"}${
+              result.appId ? ` (AppID ${result.appId})` : ""
+            }`
           : result.error || "Could not launch",
       });
     } catch (err) {
@@ -487,7 +506,17 @@ export default definePlugin(() => {
     (payload) => {
       void (async () => {
         const result = await launchSteamGame(payload);
-        if (result.ok) {
+        if (result.ok && result.appId) {
+          try {
+            await reportSteamAppId(payload.game_name, payload.exe, result.appId);
+          } catch (err) {
+            console.warn("report_steam_appid failed", err);
+          }
+          toaster.toast({
+            title: "Launching with Proton",
+            body: `${payload.game_name} (AppID ${result.appId})`,
+          });
+        } else if (result.ok) {
           toaster.toast({
             title: "Launching",
             body: payload.game_name,

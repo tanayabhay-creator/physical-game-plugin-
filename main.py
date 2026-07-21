@@ -115,7 +115,7 @@ class Plugin:
             "last_steam_app_id": steam_app_id,
             "last_vdf_launch_id": vdf_launch_id,
             "last_shortcut_appid": shortcut_appid,
-            "plugin_build": "2026-07-21-launch3",
+            "plugin_build": "2026-07-21-launch4",
             "log_lines": [str(x) for x in list(s.log_lines[-50:])],
             "busy": bool(self._busy),
             "detected_mounts": [str(x) for x in detected],
@@ -178,7 +178,7 @@ class Plugin:
                 "last_steam_app_id": "0",
                 "last_vdf_launch_id": "0",
                 "last_shortcut_appid": "0",
-                "plugin_build": "2026-07-21-launch3",
+                "plugin_build": "2026-07-21-launch4",
                 "log_lines": [],
                 "busy": False,
                 "detected_mounts": [],
@@ -517,7 +517,7 @@ class Plugin:
                 launch_options=info.resolved_launch_options(),
             )
             await self._log(
-                f"[launch3] shortcuts.vdf {'created' if shortcut.created else 'updated'} "
+                f"[launch4] shortcuts.vdf {'created' if shortcut.created else 'updated'} "
                 f"appid={shortcut.appid}"
             )
 
@@ -542,7 +542,7 @@ class Plugin:
                     if saved_app_id not in {"", "0"}
                     else self._store.settings.last_steam_app_id or shortcut_appid_s
                 ),
-                plugin_build="2026-07-21-launch3",
+                plugin_build="2026-07-21-launch4",
             )
 
             steam_payload = {
@@ -566,7 +566,7 @@ class Plugin:
 
             await decky.emit("pml_add_to_steam", steam_payload)
             await self._log(
-                f"[launch3] Steam register requested for '{info.game_name}' "
+                f"[launch4] Steam register requested for '{info.game_name}' "
                 f"(shortcut_appid={shortcut_appid_s}, should_launch={should_launch})"
             )
 
@@ -579,7 +579,7 @@ class Plugin:
                 steam_payload["steam_app_id"] = refreshed
                 await decky.emit("pml_launch_game", steam_payload)
                 await self._log(
-                    f"[launch3] Launch event emitted (steam_app_id={refreshed}, "
+                    f"[launch4] Launch event emitted (steam_app_id={refreshed}, "
                     f"shortcut_appid={shortcut_appid_s})"
                 )
                 await self._set_status("Launch requested", progress=100.0)

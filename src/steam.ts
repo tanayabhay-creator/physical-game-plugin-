@@ -14,29 +14,14 @@ export type SteamShortcutRequest = {
   needs_add_shortcut?: boolean;
 };
 
-type SteamClientAPI = {
-  Apps?: {
-    AddShortcut?: (
-      name: string,
-      exe: string,
-      startDir: string,
-      args: string
-    ) => Promise<number>;
-    SpecifyCompatTool?: (appId: number, toolName: string) => void;
-    RunGame?: (
-      appId: string,
-      launchOptions: string,
-      param2: number,
-      launchSource: number
-    ) => void;
-  };
-  URL?: {
-    ExecuteSteamURL?: (url: string) => void;
-  };
-};
+declare global {
+  interface Window {
+    SteamClient?: any;
+  }
+}
 
-function getSteamClient(): SteamClientAPI | undefined {
-  return (window as Window & { SteamClient?: SteamClientAPI }).SteamClient;
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function asIdString(value: number | string | undefined | null): string {
@@ -50,52 +35,136 @@ function asIdString(value: number | string | undefined | null): string {
   return text;
 }
 
-/** Build Non-Steam steam://rungameid using BigInt (safe for 64-bit). */
-export function toVdfLaunchIdString(shortcutAppId: string | number): string {
-  try {
-    const app = BigInt(asIdString(shortcutAppId) || "0");
-    if (app === 0n) {
-      return "";
-    }
-    const launch = ((app & 0xffffffffn) << 32n) | 0x02000000n;
-    return launch.toString();
-  } catch {
+function looksLikeWindowsExe(exePath: string): boolean {
+  return exePath.toLowerCase().endsWith(".exe");
+}
+
+function resolveStartDir(req: SteamShortcutRequest): string {
+  const start = (req.start_dir || "").trim();
+  if (start) {
+    return start;
+  }
+  const exe = (req.exe || "").trim();
+  if (!exe) {
     return "";
   }
+  const idx = Math.max(exe.lastIndexOf("/"), exe.lastIndexOf("\\"));
+  return idx > 0 ? exe.slice(0, idx) : exe;
 }
 
-function launchViaUri(launchId: number | string): void {
-  const id = asIdString(launchId);
-  if (!id) {
+function resolveCompatTool(req: SteamShortcutRequest): string {
+  const explicit = (req.compat_tool || "").trim();
+  if (explicit) {
+    return explicit;
+  }
+  return looksLikeWindowsExe(req.exe || "") ? "proton_experimental" : "";
+}
+
+async function findExistingShortcutAppId(
+  appName: string,
+  exePath: string
+): Promise<string | null> {
+  const apps = window.SteamClient?.Apps;
+  if (!apps?.GetAllApps) {
+    return null;
+  }
+
+  try {
+    const all = await Promise.resolve(apps.GetAllApps());
+    if (!Array.isArray(all)) {
+      return null;
+    }
+
+    for (const app of all) {
+      const name = String(app?.display_name ?? app?.strDisplayName ?? app?.name ?? "");
+      const exe = String(app?.strExePath ?? app?.exe ?? app?.Exe ?? "");
+      const appid = asIdString(app?.appid ?? app?.appId ?? app?.unAppID);
+      if (!appid) {
+        continue;
+      }
+      if (name === appName || (exe && exePath && exe.includes(exePath))) {
+        return appid;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+async function configureShortcut(
+  appId: string,
+  req: SteamShortcutRequest
+): Promise<void> {
+  const apps = window.SteamClient?.Apps;
+  if (!apps) {
     return;
   }
-  const url = `steam://rungameid/${id}`;
-  const sc = getSteamClient();
+
+  const startDir = resolveStartDir(req);
+  const numericId = Number(appId);
+
   try {
-    if (sc?.URL?.ExecuteSteamURL) {
-      sc.URL.ExecuteSteamURL(url);
-      console.log("PML ExecuteSteamURL", url);
-      return;
+    if (typeof apps.SetShortcutName === "function") {
+      await Promise.resolve(apps.SetShortcutName(numericId, req.game_name));
     }
-  } catch (err) {
-    console.warn("ExecuteSteamURL failed", err);
+  } catch {
+    // ignore
   }
   try {
-    location.href = url;
-  } catch (err) {
-    console.warn("location.href steam URL failed", err);
+    if (typeof apps.SetShortcutExe === "function") {
+      await Promise.resolve(apps.SetShortcutExe(numericId, `"${req.exe}"`));
+    }
+  } catch {
+    // ignore
   }
+  try {
+    if (typeof apps.SetShortcutStartDir === "function" && startDir) {
+      await Promise.resolve(apps.SetShortcutStartDir(numericId, `"${startDir}"`));
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    if (typeof apps.SetShortcutLaunchOptions === "function") {
+      await Promise.resolve(
+        apps.SetShortcutLaunchOptions(numericId, req.launch_options || "")
+      );
+    }
+  } catch {
+    // ignore
+  }
+
+  // Required for Windows .exe Non-Steam games on Steam Deck.
+  // Without this, Steam often shows: "Game configuration unavailable".
+  const compat = resolveCompatTool(req);
+  if (compat && typeof apps.SpecifyCompatTool === "function") {
+    const tools = [compat, "proton_experimental", "proton_hotfix", "proton_9"];
+    const unique = [...new Set(tools.filter(Boolean))];
+    for (const tool of unique) {
+      try {
+        await Promise.resolve(apps.SpecifyCompatTool(numericId, tool));
+        console.log("PML SpecifyCompatTool", appId, tool);
+        break;
+      } catch (err) {
+        console.warn("SpecifyCompatTool failed", tool, err);
+      }
+    }
+  }
+
+  await sleep(400);
 }
 
-function runGame(appId: number | string, launchOptions = ""): boolean {
-  const sc = getSteamClient();
-  if (!sc?.Apps?.RunGame) {
+async function runGame(appId: string, launchOptions = ""): Promise<boolean> {
+  const apps = window.SteamClient?.Apps;
+  if (!apps || typeof apps.RunGame !== "function") {
     return false;
   }
   const id = asIdString(appId);
   if (!id) {
     return false;
   }
+
   const attempts: Array<[number, number]> = [
     [-1, 0],
     [0, 0],
@@ -103,95 +172,102 @@ function runGame(appId: number | string, launchOptions = ""): boolean {
   ];
   for (const [param2, launchSource] of attempts) {
     try {
-      sc.Apps.RunGame(id, launchOptions || "", param2, launchSource);
+      await Promise.resolve(apps.RunGame(id, launchOptions || "", param2, launchSource));
       console.log("PML RunGame", id, param2, launchSource);
       return true;
     } catch (err) {
-      console.warn("RunGame attempt failed", id, param2, err);
+      console.warn("RunGame string id failed", id, param2, err);
+    }
+    try {
+      await Promise.resolve(
+        apps.RunGame(Number(id), launchOptions || "", param2, launchSource)
+      );
+      console.log("PML RunGame(number)", id, param2, launchSource);
+      return true;
+    } catch (err) {
+      console.warn("RunGame number id failed", id, param2, err);
     }
   }
   return false;
+}
+
+/**
+ * Ensure a Non-Steam shortcut exists and is configured (exe/start dir/Proton).
+ * Returns the SteamClient AppID that must be used with RunGame.
+ */
+export async function ensureConfiguredShortcut(
+  req: SteamShortcutRequest
+): Promise<string> {
+  const apps = window.SteamClient?.Apps;
+  if (!apps?.AddShortcut) {
+    throw new Error("SteamClient.Apps.AddShortcut is unavailable");
+  }
+
+  const startDir = resolveStartDir(req);
+  let appId =
+    asIdString(req.steam_app_id) ||
+    (await findExistingShortcutAppId(req.game_name, req.exe));
+
+  if (!appId) {
+    // AddShortcut signatures vary across Steam builds; try common ones.
+    let created: unknown;
+    try {
+      created = await Promise.resolve(
+        apps.AddShortcut(req.game_name, req.exe, req.launch_options || "", "")
+      );
+    } catch {
+      created = await Promise.resolve(
+        apps.AddShortcut(req.game_name, req.exe, startDir, req.launch_options || "")
+      );
+    }
+    appId = asIdString(created as number | string);
+  }
+
+  if (!appId) {
+    throw new Error("SteamClient did not return a shortcut AppID");
+  }
+
+  await configureShortcut(appId, { ...req, start_dir: startDir });
+  return appId;
 }
 
 export async function addGameToSteam(
   req: SteamShortcutRequest
 ): Promise<{ ok: boolean; appId?: number; error?: string }> {
   try {
-    const sc = getSteamClient();
-    if (!sc?.Apps?.AddShortcut) {
-      return {
-        ok: false,
-        error: "SteamClient.Apps.AddShortcut unavailable (VDF fallback only)",
-      };
-    }
-
-    const existing = asIdString(req.steam_app_id) || asIdString(req.shortcut_appid);
-    const shouldAdd =
-      Boolean(req.needs_add_shortcut) ||
-      !req.already_installed ||
-      !existing;
-
-    if (!shouldAdd && existing) {
-      return { ok: true, appId: Number(existing) };
-    }
-
-    const appId = await sc.Apps.AddShortcut(
-      req.game_name,
-      req.exe,
-      req.start_dir,
-      req.launch_options || ""
-    );
-
-    const compat =
-      (req.compat_tool || "").trim() ||
-      (req.exe.toLowerCase().endsWith(".exe") ? "proton_experimental" : "");
-    if (compat && sc.Apps.SpecifyCompatTool) {
-      try {
-        sc.Apps.SpecifyCompatTool(appId, compat);
-      } catch (err) {
-        console.warn("SpecifyCompatTool failed", err);
-      }
-    }
-
-    return { ok: true, appId };
+    const appId = await ensureConfiguredShortcut(req);
+    return { ok: true, appId: Number(appId) };
   } catch (err) {
     return { ok: false, error: String(err) };
   }
 }
 
+/**
+ * Configure shortcut (with Proton for .exe) and launch via RunGame only.
+ * Do NOT use steam://rungameid with VDF-computed IDs — those cause
+ * "Game configuration unavailable" when they don't match SteamClient's AppID.
+ */
 export async function launchSteamGame(
   req: SteamShortcutRequest
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; appId?: number; error?: string }> {
   try {
-    let launched = false;
-    const steamAppId = asIdString(req.steam_app_id);
-    const shortcutAppId = asIdString(req.shortcut_appid);
-    const vdfLaunchId =
-      asIdString(req.vdf_launch_id) ||
-      toVdfLaunchIdString(shortcutAppId || steamAppId);
-
-    // 1) Preferred: RunGame with known AppIDs
-    if (steamAppId) {
-      launched = runGame(steamAppId, req.launch_options || "") || launched;
-    }
-    if (shortcutAppId) {
-      launched = runGame(shortcutAppId, req.launch_options || "") || launched;
-    }
-
-    // 2) steam:// URI with BigInt-safe 64-bit launch id
-    if (vdfLaunchId) {
-      launchViaUri(vdfLaunchId);
-      launched = true;
-    }
-
-    if (!launched) {
+    if (!req.exe) {
       return {
         ok: false,
-        error:
-          "No AppID available. Open plugin, press Start Transfer once, then Launch again.",
+        error: "Missing exe path — transfer may not have finished",
       };
     }
-    return { ok: true };
+
+    const appId = await ensureConfiguredShortcut(req);
+    const ok = await runGame(appId, req.launch_options || "");
+    if (!ok) {
+      return {
+        ok: false,
+        appId: Number(appId),
+        error: `SteamClient.Apps.RunGame failed for AppID ${appId}`,
+      };
+    }
+    return { ok: true, appId: Number(appId) };
   } catch (err) {
     return { ok: false, error: String(err) };
   }
