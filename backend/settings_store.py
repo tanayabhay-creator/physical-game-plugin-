@@ -35,7 +35,7 @@ class PluginSettings:
     last_shortcut_appid: str = "0"
     steam_app_ids: Dict[str, str] = field(default_factory=dict)
     log_lines: List[str] = field(default_factory=list)
-    plugin_build: str = "2026-07-21-launch10"
+    plugin_build: str = "2026-07-21-launch11"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -63,7 +63,7 @@ class PluginSettings:
             ),
             steam_app_ids=steam_app_ids,
             log_lines=list(data.get("log_lines") or []),
-            plugin_build=str(data.get("plugin_build") or "2026-07-21-launch10"),
+            plugin_build=str(data.get("plugin_build") or "2026-07-21-launch11"),
         )
 
 

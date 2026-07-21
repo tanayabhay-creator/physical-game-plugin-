@@ -42,48 +42,36 @@ const reportSteamAppId = callable<
 >("report_steam_appid");
 const backendLaunch = callable<[app_id: string], PluginStatus>("backend_launch");
 
+/** Deduplicate launches within this Game Mode session. */
+let lastFrontendLaunchAppId = "";
+let lastFrontendLaunchAt = 0;
+
 async function launchWithBackendFallback(
   req: Parameters<typeof launchSteamGame>[0]
 ): Promise<Awaited<ReturnType<typeof launchSteamGame>>> {
-  // Resolve / ensure shortcut exists, report AppID, then launch ONCE via backend.
-  // Dual frontend+backend launches caused "Game already running" on card reinsert.
-  const ensured = await addGameToSteam({
-    ...req,
-    needs_add_shortcut: req.needs_add_shortcut !== false,
-  });
-  const appId =
-    ensured.appId ||
-    (req.steam_app_id && String(req.steam_app_id) !== "0"
-      ? Number(req.steam_app_id)
-      : undefined);
+  // launch9 working path: frontend ExecuteSteamURL (Non-Steam 64-bit).
+  // Backend-only launch (launch10) did not start the game on Deck.
+  const result = await launchSteamGame(req);
+  if (result.appId) {
+    try {
+      await reportSteamAppId(req.game_name, req.exe, result.appId);
+    } catch (err) {
+      console.warn("report_steam_appid failed", err);
+    }
 
-  if (!appId) {
-    // Fall back to frontend-only launch path.
-    return launchSteamGame(req);
+    const now = Date.now();
+    const appKey = String(result.appId);
+    if (
+      appKey === lastFrontendLaunchAppId &&
+      now - lastFrontendLaunchAt < 45000
+    ) {
+      console.log("PML skipping duplicate frontend launch", appKey);
+      return { ...result, ok: true, method: result.method || "deduped" };
+    }
+    lastFrontendLaunchAppId = appKey;
+    lastFrontendLaunchAt = now;
   }
-
-  try {
-    await reportSteamAppId(req.game_name, req.exe, appId);
-  } catch (err) {
-    console.warn("report_steam_appid failed", err);
-  }
-
-  try {
-    await backendLaunch(String(appId));
-    return {
-      ok: true,
-      appId,
-      compatTool: ensured.compatTool,
-      method: "backend",
-    };
-  } catch (err) {
-    console.warn("backend_launch failed, trying frontend URI", err);
-    return launchSteamGame({
-      ...req,
-      steam_app_id: String(appId),
-      needs_add_shortcut: false,
-    });
-  }
+  return result;
 }
 
 function Content() {
@@ -618,8 +606,30 @@ export default definePlugin(() => {
               result.appId ? ` (AppID ${result.appId})` : ""
             }`,
           });
-          // Do not launch here when auto_launch_pending — backend issues
-          // exactly one steam:// launch after AppID is reported.
+
+          // Single launch via working frontend ExecuteSteamURL path (launch9).
+          if (payload.should_launch) {
+            const launch = await launchWithBackendFallback({
+              ...payload,
+              steam_app_id: result.appId ? String(result.appId) : "0",
+              needs_add_shortcut: false,
+              compat_tool: payload.compat_tool || "proton_experimental",
+            });
+            toaster.toast({
+              title: launch.ok ? "Launching" : "Launch failed",
+              body: launch.ok
+                ? `${payload.game_name}${
+                    launch.appId ? ` (AppID ${launch.appId}` : ""
+                  }${
+                    launch.method
+                      ? `, ${launch.method})`
+                      : launch.appId
+                        ? ")"
+                        : ""
+                  }`
+                : launch.error || "Could not launch",
+            });
+          }
         } else {
           toaster.toast({
             title: "Steam shortcut",

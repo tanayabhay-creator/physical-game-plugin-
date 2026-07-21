@@ -605,8 +605,8 @@ class Plugin:
                 "start_dir": str(info.resolved_start_dir()),
                 "launch_options": info.resolved_launch_options(),
                 "compat_tool": info.compat_tool or "proton_experimental",
-                # Frontend only registers the shortcut; backend does the single launch.
-                "should_launch": False,
+                # Frontend launches once via ExecuteSteamURL (worked in launch9).
+                "should_launch": bool(should_launch),
                 "vdf_launch_id": vdf_launch_s,
                 "steam_app_id": (
                     saved_app_id if saved_app_id not in {"", "0"} else "0"
@@ -614,7 +614,6 @@ class Plugin:
                 "shortcut_appid": shortcut_appid_s,
                 "already_installed": bool(already and not force_recopy),
                 "needs_add_shortcut": True,
-                "auto_launch_pending": bool(should_launch),
             }
 
             await self._set_status(
@@ -623,12 +622,12 @@ class Plugin:
             await self._emit_status()
             await decky.emit("pml_add_to_steam", steam_payload)
             await self._log(
-                f"[launch10] Live AddShortcut requested for '{info.game_name}' "
+                f"[launch11] Live AddShortcut requested for '{info.game_name}' "
                 f"(vdf_appid={shortcut_appid_s}, saved_steam_app_id={saved_app_id}, "
-                f"auto_launch={should_launch})"
+                f"should_launch={should_launch})"
             )
 
-            # Wait for frontend AddShortcut → report_steam_appid.
+            # Wait for frontend AddShortcut → report + optional single launch.
             refreshed = "0"
             for _ in range(12):
                 await asyncio.sleep(0.5)
@@ -636,33 +635,19 @@ class Plugin:
                 refreshed = str(self._store.settings.last_steam_app_id or "0")
                 if refreshed not in {"", "0"} and refreshed != shortcut_appid_s:
                     break
-                if refreshed not in {"", "0"}:
-                    # Accept any non-zero id after a few waits.
-                    if _ >= 5:
-                        break
+                if refreshed not in {"", "0"} and _ >= 5:
+                    break
 
             if should_launch:
-                await self._set_status("Launching Game...", progress=100.0)
-                await self._emit_status()
-                launch_id = refreshed if refreshed not in {"", "0"} else "0"
-                if launch_id not in {"", "0"}:
-                    # Single launch only — do not also emit pml_launch_game
-                    # (that caused "Game already running" on card reinsert).
-                    try:
-                        await self.backend_launch(launch_id)
-                        await self._log(
-                            f"[launch10] Single backend steam:// launch for {launch_id}"
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        await self._log(f"[launch10] backend_launch error: {exc}")
-                else:
-                    await self._log(
-                        "[launch10] No Steam AppID yet; skipping auto-launch "
-                        "(use Launch last game now after Add/Fix)"
-                    )
+                # Do NOT backend_launch or emit pml_launch_game here —
+                # frontend already launched once via should_launch.
                 await self._set_status("Launch requested", progress=100.0)
                 await notify("Physical Media Launcher", f"Launching {info.game_name}")
-                await decky.emit("pml_launched", info.game_name, launch_id)
+                await decky.emit(
+                    "pml_launched",
+                    info.game_name,
+                    refreshed if refreshed not in {"", "0"} else "0",
+                )
             else:
                 await self._set_status("Added to Steam", progress=100.0)
                 await notify(
