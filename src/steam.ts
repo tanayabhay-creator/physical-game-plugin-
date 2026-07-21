@@ -43,12 +43,30 @@ function asIdString(value: number | string | undefined | null): string {
   if (value === undefined || value === null || value === "") {
     return "";
   }
-  return String(value);
+  const text = String(value).trim();
+  if (!text || text === "0" || text === "NaN") {
+    return "";
+  }
+  return text;
+}
+
+/** Build Non-Steam steam://rungameid using BigInt (safe for 64-bit). */
+export function toVdfLaunchIdString(shortcutAppId: string | number): string {
+  try {
+    const app = BigInt(asIdString(shortcutAppId) || "0");
+    if (app === 0n) {
+      return "";
+    }
+    const launch = ((app & 0xffffffffn) << 32n) | 0x02000000n;
+    return launch.toString();
+  } catch {
+    return "";
+  }
 }
 
 function launchViaUri(launchId: number | string): void {
   const id = asIdString(launchId);
-  if (!id || id === "0") {
+  if (!id) {
     return;
   }
   const url = `steam://rungameid/${id}`;
@@ -75,7 +93,7 @@ function runGame(appId: number | string, launchOptions = ""): boolean {
     return false;
   }
   const id = asIdString(appId);
-  if (!id || id === "0") {
+  if (!id) {
     return false;
   }
   const attempts: Array<[number, number]> = [
@@ -107,14 +125,13 @@ export async function addGameToSteam(
       };
     }
 
-    const existing = asIdString(req.steam_app_id);
+    const existing = asIdString(req.steam_app_id) || asIdString(req.shortcut_appid);
     const shouldAdd =
       Boolean(req.needs_add_shortcut) ||
       !req.already_installed ||
-      !existing ||
-      existing === "0";
+      !existing;
 
-    if (!shouldAdd) {
+    if (!shouldAdd && existing) {
       return { ok: true, appId: Number(existing) };
     }
 
@@ -149,20 +166,21 @@ export async function launchSteamGame(
     let launched = false;
     const steamAppId = asIdString(req.steam_app_id);
     const shortcutAppId = asIdString(req.shortcut_appid);
-    const vdfLaunchId = asIdString(req.vdf_launch_id);
+    const vdfLaunchId =
+      asIdString(req.vdf_launch_id) ||
+      toVdfLaunchIdString(shortcutAppId || steamAppId);
 
-    if (steamAppId && steamAppId !== "0") {
+    // 1) Preferred: RunGame with known AppIDs
+    if (steamAppId) {
       launched = runGame(steamAppId, req.launch_options || "") || launched;
     }
-    if (shortcutAppId && shortcutAppId !== "0") {
+    if (shortcutAppId) {
       launched = runGame(shortcutAppId, req.launch_options || "") || launched;
     }
-    if (vdfLaunchId && vdfLaunchId !== "0") {
+
+    // 2) steam:// URI with BigInt-safe 64-bit launch id
+    if (vdfLaunchId) {
       launchViaUri(vdfLaunchId);
-      launched = true;
-    }
-    if (steamAppId && steamAppId !== "0") {
-      launchViaUri(steamAppId);
       launched = true;
     }
 
@@ -170,7 +188,7 @@ export async function launchSteamGame(
       return {
         ok: false,
         error:
-          "No AppID available to launch. Use Start Transfer once so Steam AppID can be saved.",
+          "No AppID available. Open plugin, press Start Transfer once, then Launch again.",
       };
     }
     return { ok: true };

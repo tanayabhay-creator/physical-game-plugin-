@@ -6,7 +6,18 @@ import json
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
+
+
+def _as_str_id(value: Any) -> str:
+    """Store Steam IDs as strings (never lose 64-bit values / never break JS RPC)."""
+    if value is None or value == "":
+        return "0"
+    try:
+        return str(int(value))
+    except (TypeError, ValueError):
+        text = str(value).strip()
+        return text if text else "0"
 
 
 @dataclass
@@ -19,10 +30,12 @@ class PluginSettings:
     last_mount: str = ""
     last_error: str = ""
     last_exe: str = ""
-    last_steam_app_id: int = 0
-    last_vdf_launch_id: int = 0
-    steam_app_ids: Dict[str, int] = field(default_factory=dict)
+    last_steam_app_id: str = "0"
+    last_vdf_launch_id: str = "0"
+    last_shortcut_appid: str = "0"
+    steam_app_ids: Dict[str, str] = field(default_factory=dict)
     log_lines: List[str] = field(default_factory=list)
+    plugin_build: str = "2026-07-21-launch3"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -30,13 +43,10 @@ class PluginSettings:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PluginSettings":
         raw_ids = data.get("steam_app_ids") or {}
-        steam_app_ids: Dict[str, int] = {}
+        steam_app_ids: Dict[str, str] = {}
         if isinstance(raw_ids, dict):
             for key, value in raw_ids.items():
-                try:
-                    steam_app_ids[str(key)] = int(value)
-                except (TypeError, ValueError):
-                    continue
+                steam_app_ids[str(key)] = _as_str_id(value)
         return cls(
             auto_launch=bool(data.get("auto_launch", True)),
             poll_interval_sec=float(data.get("poll_interval_sec", 2.0)),
@@ -46,10 +56,14 @@ class PluginSettings:
             last_mount=str(data.get("last_mount") or ""),
             last_error=str(data.get("last_error") or ""),
             last_exe=str(data.get("last_exe") or ""),
-            last_steam_app_id=int(data.get("last_steam_app_id") or 0),
-            last_vdf_launch_id=int(data.get("last_vdf_launch_id") or 0),
+            last_steam_app_id=_as_str_id(data.get("last_steam_app_id")),
+            last_vdf_launch_id=_as_str_id(data.get("last_vdf_launch_id")),
+            last_shortcut_appid=_as_str_id(
+                data.get("last_shortcut_appid") or data.get("last_steam_app_id")
+            ),
             steam_app_ids=steam_app_ids,
             log_lines=list(data.get("log_lines") or []),
+            plugin_build=str(data.get("plugin_build") or "2026-07-21-launch3"),
         )
 
 
@@ -83,6 +97,12 @@ class SettingsStore:
     def update(self, **kwargs: Any) -> PluginSettings:
         for key, value in kwargs.items():
             if hasattr(self.settings, key):
+                if key in {
+                    "last_steam_app_id",
+                    "last_vdf_launch_id",
+                    "last_shortcut_appid",
+                }:
+                    value = _as_str_id(value)
                 setattr(self.settings, key, value)
         self.save()
         return self.settings

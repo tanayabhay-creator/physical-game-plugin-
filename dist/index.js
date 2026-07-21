@@ -100,6 +100,10 @@ const EMPTY_STATUS = {
     busy: false,
     detected_mounts: [],
     has_detected_media: false,
+    plugin_build: "",
+    last_steam_app_id: "0",
+    last_vdf_launch_id: "0",
+    last_shortcut_appid: "0",
 };
 function formatBytes(bytes) {
     if (!Number.isFinite(bytes) || bytes <= 0) {
@@ -124,11 +128,29 @@ function asIdString(value) {
     if (value === undefined || value === null || value === "") {
         return "";
     }
-    return String(value);
+    const text = String(value).trim();
+    if (!text || text === "0" || text === "NaN") {
+        return "";
+    }
+    return text;
+}
+/** Build Non-Steam steam://rungameid using BigInt (safe for 64-bit). */
+function toVdfLaunchIdString(shortcutAppId) {
+    try {
+        const app = BigInt(asIdString(shortcutAppId) || "0");
+        if (app === 0n) {
+            return "";
+        }
+        const launch = ((app & 0xffffffffn) << 32n) | 0x02000000n;
+        return launch.toString();
+    }
+    catch {
+        return "";
+    }
 }
 function launchViaUri(launchId) {
     const id = asIdString(launchId);
-    if (!id || id === "0") {
+    if (!id) {
         return;
     }
     const url = `steam://rungameid/${id}`;
@@ -156,7 +178,7 @@ function runGame(appId, launchOptions = "") {
         return false;
     }
     const id = asIdString(appId);
-    if (!id || id === "0") {
+    if (!id) {
         return false;
     }
     const attempts = [
@@ -185,12 +207,11 @@ async function addGameToSteam(req) {
                 error: "SteamClient.Apps.AddShortcut unavailable (VDF fallback only)",
             };
         }
-        const existing = asIdString(req.steam_app_id);
+        const existing = asIdString(req.steam_app_id) || asIdString(req.shortcut_appid);
         const shouldAdd = Boolean(req.needs_add_shortcut) ||
             !req.already_installed ||
-            !existing ||
-            existing === "0";
-        if (!shouldAdd) {
+            !existing;
+        if (!shouldAdd && existing) {
             return { ok: true, appId: Number(existing) };
         }
         const appId = await sc.Apps.AddShortcut(req.game_name, req.exe, req.start_dir, req.launch_options || "");
@@ -215,25 +236,24 @@ async function launchSteamGame(req) {
         let launched = false;
         const steamAppId = asIdString(req.steam_app_id);
         const shortcutAppId = asIdString(req.shortcut_appid);
-        const vdfLaunchId = asIdString(req.vdf_launch_id);
-        if (steamAppId && steamAppId !== "0") {
+        const vdfLaunchId = asIdString(req.vdf_launch_id) ||
+            toVdfLaunchIdString(shortcutAppId || steamAppId);
+        // 1) Preferred: RunGame with known AppIDs
+        if (steamAppId) {
             launched = runGame(steamAppId, req.launch_options || "") || launched;
         }
-        if (shortcutAppId && shortcutAppId !== "0") {
+        if (shortcutAppId) {
             launched = runGame(shortcutAppId, req.launch_options || "") || launched;
         }
-        if (vdfLaunchId && vdfLaunchId !== "0") {
+        // 2) steam:// URI with BigInt-safe 64-bit launch id
+        if (vdfLaunchId) {
             launchViaUri(vdfLaunchId);
-            launched = true;
-        }
-        if (steamAppId && steamAppId !== "0") {
-            launchViaUri(steamAppId);
             launched = true;
         }
         if (!launched) {
             return {
                 ok: false,
-                error: "No AppID available to launch. Use Start Transfer once so Steam AppID can be saved.",
+                error: "No AppID available. Open plugin, press Start Transfer once, then Launch again.",
             };
         }
         return { ok: true };
@@ -250,7 +270,6 @@ const rescanMedia = callable("rescan_media");
 const startTransfer = callable("start_transfer");
 const resetBusy = callable("reset_busy");
 const reportSteamAppId = callable("report_steam_appid");
-const launchLastGame = callable("launch_last_game");
 function Content() {
     const [state, setState] = SP_REACT.useState(EMPTY_STATUS);
     SP_REACT.useEffect(() => {
@@ -382,43 +401,33 @@ function Content() {
     };
     const onLaunchLast = async () => {
         try {
-            const next = await launchLastGame();
+            // Frontend-only launch path — do NOT call launch_last_game RPC
+            // (that is what was throwing "Python exception" on Deck).
+            const next = await getStatus();
             setState(next);
-            if (next.last_error) {
+            if (next.plugin_build !== "2026-07-21-launch3") {
                 toaster.toast({
-                    title: "Launch failed",
-                    body: next.last_error,
+                    title: "Old plugin build",
+                    body: `Build ${next.plugin_build || "unknown"} — reinstall/update the plugin.`,
                 });
-                return;
             }
-            // Also launch directly from the button click context (more reliable in Game Mode).
             const result = await launchSteamGame({
                 launch_options: "",
                 steam_app_id: next.last_steam_app_id,
-                vdf_launch_id: next.last_vdf_launch_id,
-                shortcut_appid: next.last_steam_app_id});
+                shortcut_appid: next.last_shortcut_appid || next.last_steam_app_id,
+                vdf_launch_id: next.last_vdf_launch_id});
             toaster.toast({
                 title: result.ok ? "Launching" : "Launch failed",
                 body: result.ok
-                    ? next.last_game || "game"
+                    ? `${next.last_game || "game"} (build ${next.plugin_build || "?"})`
                     : result.error || "Could not launch",
             });
         }
         catch (err) {
-            try {
-                const next = await getStatus();
-                setState(next);
-                toaster.toast({
-                    title: "Launch failed",
-                    body: next.last_error || String(err),
-                });
-            }
-            catch {
-                toaster.toast({
-                    title: "Launch failed",
-                    body: String(err),
-                });
-            }
+            toaster.toast({
+                title: "Launch failed",
+                body: String(err),
+            });
         }
     };
     const onResetBusy = async () => {
@@ -458,7 +467,7 @@ function Content() {
     // Only grey out while an actual copy is running. Detection alone must not
     // permanently disable the button (that was locking users out).
     const transferLocked = state.copying;
-    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "Status", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Plugin status", description: state.busy ? "Working…" : "Idle", children: state.status }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Detected game media", children: detected.length > 0 ? `${detected.length} volume(s)` : "None" }) }), detected.length > 0 ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Mount path", description: detected[0] }) })) : null, SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Last transferred game", children: state.last_game || "—" }) }), state.last_mount ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Last mount", children: state.last_mount }) })) : null, state.last_error ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Last error", description: state.last_error }) })) : null] }), SP_JSX.jsx(DFL.PanelSection, { title: "Copy Progress", children: showProgress ? (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ProgressBarWithInfo, { label: "SD \u2192 SSD transfer", description: state.progress_message ||
+    return (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsxs(DFL.PanelSection, { title: "Status", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Plugin status", description: state.busy ? "Working…" : "Idle", children: state.status }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Plugin build", children: state.plugin_build || "unknown — please update" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Detected game media", children: detected.length > 0 ? `${detected.length} volume(s)` : "None" }) }), detected.length > 0 ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Mount path", description: detected[0] }) })) : null, SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Last transferred game", children: state.last_game || "—" }) }), state.last_mount ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Last mount", children: state.last_mount }) })) : null, state.last_error ? (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Last error", description: state.last_error }) })) : null] }), SP_JSX.jsx(DFL.PanelSection, { title: "Copy Progress", children: showProgress ? (SP_JSX.jsxs(SP_JSX.Fragment, { children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ProgressBarWithInfo, { label: "SD \u2192 SSD transfer", description: state.progress_message ||
                                     (state.copying ? "Copying game files…" : "Transfer finished"), layout: "below", bottomSeparator: "none", nProgress: pct, indeterminate: state.copying && pct <= 0, sOperationText: `${pct}%`, sTimeRemaining: sizeLabel }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Copied", description: state.bytes_total > 0
                                     ? `${pct}% of game data`
                                     : state.copying

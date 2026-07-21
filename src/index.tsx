@@ -40,7 +40,6 @@ const reportSteamAppId = callable<
   [game_name: string, exe: string, app_id: number],
   PluginStatus
 >("report_steam_appid");
-const launchLastGame = callable<[], PluginStatus>("launch_last_game");
 
 function Content() {
   const [state, setState] = useState<PluginStatus>(EMPTY_STATUS);
@@ -178,47 +177,41 @@ function Content() {
 
   const onLaunchLast = async () => {
     try {
-      const next = await launchLastGame();
+      // Frontend-only launch path — do NOT call launch_last_game RPC
+      // (that is what was throwing "Python exception" on Deck).
+      const next = await getStatus();
       setState(next);
-      if (next.last_error) {
+
+      if (next.plugin_build !== "2026-07-21-launch3") {
         toaster.toast({
-          title: "Launch failed",
-          body: next.last_error,
+          title: "Old plugin build",
+          body: `Build ${next.plugin_build || "unknown"} — reinstall/update the plugin.`,
         });
-        return;
       }
-      // Also launch directly from the button click context (more reliable in Game Mode).
+
       const result = await launchSteamGame({
         game_name: next.last_game || "game",
         exe: next.last_exe || "",
         start_dir: "",
         launch_options: "",
         steam_app_id: next.last_steam_app_id,
+        shortcut_appid: next.last_shortcut_appid || next.last_steam_app_id,
         vdf_launch_id: next.last_vdf_launch_id,
-        shortcut_appid: next.last_steam_app_id,
         should_launch: true,
         already_installed: true,
       });
+
       toaster.toast({
         title: result.ok ? "Launching" : "Launch failed",
         body: result.ok
-          ? next.last_game || "game"
+          ? `${next.last_game || "game"} (build ${next.plugin_build || "?"})`
           : result.error || "Could not launch",
       });
     } catch (err) {
-      try {
-        const next = await getStatus();
-        setState(next);
-        toaster.toast({
-          title: "Launch failed",
-          body: next.last_error || String(err),
-        });
-      } catch {
-        toaster.toast({
-          title: "Launch failed",
-          body: String(err),
-        });
-      }
+      toaster.toast({
+        title: "Launch failed",
+        body: String(err),
+      });
     }
   };
 
@@ -272,6 +265,12 @@ function Content() {
         <PanelSectionRow>
           <Field label="Plugin status" description={state.busy ? "Working…" : "Idle"}>
             {state.status}
+          </Field>
+        </PanelSectionRow>
+
+        <PanelSectionRow>
+          <Field label="Plugin build">
+            {state.plugin_build || "unknown — please update"}
           </Field>
         </PanelSectionRow>
 

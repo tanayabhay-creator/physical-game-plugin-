@@ -12,6 +12,8 @@ export type PluginStatus = {
   last_exe?: string;
   last_steam_app_id?: number | string;
   last_vdf_launch_id?: number | string;
+  last_shortcut_appid?: number | string;
+  plugin_build?: string;
   log_lines: string[];
   busy: boolean;
   detected_mounts?: string[];
@@ -42,6 +44,10 @@ export const EMPTY_STATUS: PluginStatus = {
   busy: false,
   detected_mounts: [],
   has_detected_media: false,
+  plugin_build: "",
+  last_steam_app_id: "0",
+  last_vdf_launch_id: "0",
+  last_shortcut_appid: "0",
 };
 
 export function formatBytes(bytes: number): string {
