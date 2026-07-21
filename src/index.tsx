@@ -23,7 +23,7 @@ import {
   PluginStatus,
   ProgressEvent,
 } from "./types";
-import { addGameToSteam, launchSteamGame, SteamShortcutRequest } from "./steam";
+import { addGameToSteam, launchSteamGame, openGameInLibrary, SteamShortcutRequest } from "./steam";
 
 const getStatus = callable<[], PluginStatus>("get_status");
 const setAutoLaunch = callable<[enabled: boolean], PluginStatus>("set_auto_launch");
@@ -221,16 +221,39 @@ function Content() {
       }
 
       toaster.toast({
-        title: result.ok ? "Launching with Proton" : "Launch failed",
+        title: result.ok ? "Launching" : "Launch failed",
         body: result.ok
           ? `${next.last_game || "game"}${
               result.appId ? ` (AppID ${result.appId}` : ""
-            }${result.compatTool ? `, ${result.compatTool})` : result.appId ? ")" : ""}`
+            }${result.method ? `, ${result.method})` : result.appId ? ")" : ""}`
           : result.error || "Could not launch",
       });
     } catch (err) {
       toaster.toast({
         title: "Launch failed",
+        body: String(err),
+      });
+    }
+  };
+
+  const onOpenInLibrary = async () => {
+    try {
+      const next = await getStatus();
+      setState(next);
+      const result = await openGameInLibrary({
+        game_name: next.last_game || "Silksong",
+        exe: next.last_exe || "",
+        steam_app_id: next.last_steam_app_id,
+      });
+      toaster.toast({
+        title: result.ok ? "Opened in Library" : "Open failed",
+        body: result.ok
+          ? "Press Play on the game page"
+          : result.error || "Game not in Non-Steam yet",
+      });
+    } catch (err) {
+      toaster.toast({
+        title: "Open failed",
         body: String(err),
       });
     }
@@ -468,6 +491,11 @@ function Content() {
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => void onOpenInLibrary()}>
+            Open game in Library (then press Play)
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => void onFixSteamShortcut()}>
             Add / Fix Non-Steam shortcut
           </ButtonItem>
@@ -574,13 +602,13 @@ export default definePlugin(() => {
               }
             }
             toaster.toast({
-              title: launch.ok ? "Launching with Proton" : "Launch failed",
+              title: launch.ok ? "Launching" : "Launch failed",
               body: launch.ok
                 ? `${payload.game_name}${
                     launch.appId ? ` (AppID ${launch.appId}` : ""
                   }${
-                    launch.compatTool
-                      ? `, ${launch.compatTool})`
+                    launch.method
+                      ? `, ${launch.method})`
                       : launch.appId
                         ? ")"
                         : ""

@@ -116,7 +116,7 @@ class Plugin:
             "last_steam_app_id": steam_app_id,
             "last_vdf_launch_id": vdf_launch_id,
             "last_shortcut_appid": shortcut_appid,
-            "plugin_build": "2026-07-21-launch7",
+            "plugin_build": "2026-07-21-launch8",
             "log_lines": [str(x) for x in list(s.log_lines[-50:])],
             "busy": bool(self._busy),
             "detected_mounts": [str(x) for x in detected],
@@ -180,7 +180,7 @@ class Plugin:
                 unsigned = value & 0xFFFFFFFF
             launch64 = (unsigned << 32) | 0x02000000
             await self._log(
-                f"[launch7] backend_launch unsigned={unsigned} launch64={launch64}"
+                f"[launch8] backend_launch unsigned={unsigned} launch64={launch64}"
             )
             await launch_steam_app(launch64, shortcut_appid=unsigned)
             await self._set_status("Launch requested (backend)", progress=100.0)
@@ -212,7 +212,7 @@ class Plugin:
                 "last_steam_app_id": "0",
                 "last_vdf_launch_id": "0",
                 "last_shortcut_appid": "0",
-                "plugin_build": "2026-07-21-launch7",
+                "plugin_build": "2026-07-21-launch8",
                 "log_lines": [],
                 "busy": False,
                 "detected_mounts": [],
@@ -551,7 +551,7 @@ class Plugin:
                 launch_options=info.resolved_launch_options(),
             )
             await self._log(
-                f"[launch7] shortcuts.vdf {'created' if shortcut.created else 'updated'} "
+                f"[launch8] shortcuts.vdf {'created' if shortcut.created else 'updated'} "
                 f"appid={shortcut.appid}"
             )
 
@@ -571,7 +571,7 @@ class Plugin:
             # Drop poisoned saves where steam_app_id == VDF CRC32 id.
             if saved_app_id == shortcut_appid_s:
                 await self._log(
-                    f"[launch7] Clearing poisoned steam_app_id={saved_app_id} "
+                    f"[launch8] Clearing poisoned steam_app_id={saved_app_id} "
                     "(matched VDF CRC32; will re-AddShortcut)"
                 )
                 saved_app_id = "0"
@@ -589,7 +589,7 @@ class Plugin:
                     if saved_app_id not in {"", "0"}
                     else "0"
                 ),
-                plugin_build="2026-07-21-launch7",
+                plugin_build="2026-07-21-launch8",
             )
 
             steam_payload = {
@@ -615,7 +615,7 @@ class Plugin:
             await self._emit_status()
             await decky.emit("pml_add_to_steam", steam_payload)
             await self._log(
-                f"[launch7] Live AddShortcut requested for '{info.game_name}' "
+                f"[launch8] Live AddShortcut requested for '{info.game_name}' "
                 f"(vdf_appid={shortcut_appid_s}, saved_steam_app_id={saved_app_id}, "
                 f"should_launch={should_launch})"
             )

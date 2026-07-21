@@ -1,5 +1,7 @@
 /** Steam client helpers for adding/launching Non-Steam shortcuts in Game Mode. */
 
+import { Navigation } from "@decky/ui";
+
 export type SteamShortcutRequest = {
   game_name: string;
   exe: string;
@@ -46,6 +48,16 @@ export function toUnsignedAppId(id: string | number): string {
     return (n & 0xffffffffn).toString();
   } catch {
     return String(id);
+  }
+}
+
+/** Non-Steam steam://rungameid target: (appid << 32) | 0x02000000 */
+export function toNonSteamLaunchId64(unsignedAppId: string | number): string {
+  try {
+    const app = BigInt(toUnsignedAppId(unsignedAppId));
+    return ((app << 32n) | 0x02000000n).toString();
+  } catch {
+    return "";
   }
 }
 
@@ -212,10 +224,14 @@ async function pickAvailableCompatTool(
   return preferredList[0] || "proton_experimental";
 }
 
+/**
+ * Full configure — only when creating/fixing a shortcut.
+ * Do NOT call this immediately before every launch (re-SpecifyCompatTool
+ * can make Proton Non-Steam titles start then instantly stop).
+ */
 async function configureShortcut(
   appId: string,
-  req: SteamShortcutRequest,
-  light = false
+  req: SteamShortcutRequest
 ): Promise<string> {
   const apps = window.SteamClient?.Apps;
   if (!apps) {
@@ -226,39 +242,37 @@ async function configureShortcut(
   const unsigned = toUnsignedAppId(appId);
   const numericId = Number(unsigned);
 
-  if (!light) {
-    try {
-      if (typeof apps.SetShortcutName === "function") {
-        await Promise.resolve(apps.SetShortcutName(numericId, req.game_name));
-      }
-    } catch {
-      // ignore
+  try {
+    if (typeof apps.SetShortcutName === "function") {
+      await Promise.resolve(apps.SetShortcutName(numericId, req.game_name));
     }
-    try {
-      if (typeof apps.SetShortcutExe === "function") {
-        await Promise.resolve(apps.SetShortcutExe(numericId, quotePath(req.exe)));
-      }
-    } catch {
-      // ignore
+  } catch {
+    // ignore
+  }
+  try {
+    if (typeof apps.SetShortcutExe === "function") {
+      await Promise.resolve(apps.SetShortcutExe(numericId, quotePath(req.exe)));
     }
-    try {
-      if (typeof apps.SetShortcutStartDir === "function" && startDir) {
-        await Promise.resolve(
-          apps.SetShortcutStartDir(numericId, quotePath(startDir))
-        );
-      }
-    } catch {
-      // ignore
+  } catch {
+    // ignore
+  }
+  try {
+    if (typeof apps.SetShortcutStartDir === "function" && startDir) {
+      await Promise.resolve(
+        apps.SetShortcutStartDir(numericId, quotePath(startDir))
+      );
     }
-    try {
-      if (typeof apps.SetShortcutLaunchOptions === "function") {
-        await Promise.resolve(
-          apps.SetShortcutLaunchOptions(numericId, req.launch_options || "")
-        );
-      }
-    } catch {
-      // ignore
+  } catch {
+    // ignore
+  }
+  try {
+    if (typeof apps.SetShortcutLaunchOptions === "function") {
+      await Promise.resolve(
+        apps.SetShortcutLaunchOptions(numericId, req.launch_options || "")
+      );
     }
+  } catch {
+    // ignore
   }
 
   let applied = "";
@@ -274,47 +288,146 @@ async function configureShortcut(
     }
   }
 
-  // Short settle only — long waits + multi-launch previously froze Game Mode.
-  await sleep(light ? 400 : 800);
+  await sleep(600);
   return applied;
 }
 
-/**
- * Single safe launch: SteamClient.Apps.RunGame once.
- * Do NOT use location.href / multiple steam:// URIs — that freezes Game Mode
- * (black screen) when fired from a Decky plugin.
- */
-async function runGameOnce(appId: string, launchOptions = ""): Promise<boolean> {
-  const apps = window.SteamClient?.Apps;
-  if (!apps || typeof apps.RunGame !== "function") {
-    return false;
+function closePluginMenus(): void {
+  try {
+    Navigation.CloseSideMenus?.();
+  } catch (err) {
+    console.warn("CloseSideMenus failed", err);
   }
+}
+
+function navigateToApp(appId: string): void {
   const id = toUnsignedAppId(appId);
-  if (!id) {
-    return false;
+  try {
+    Navigation.Navigate(`/library/app/${id}`);
+    Navigation.CloseSideMenus?.();
+    console.log("PML Navigate library app", id);
+  } catch (err) {
+    console.warn("Navigate to app failed", err);
+    closePluginMenus();
   }
+}
+
+/**
+ * Listen briefly for Steam LaunchApp errors so we can toast a real reason.
+ */
+function watchLaunchErrors(
+  expectedAppId: string,
+  onError: (message: string) => void
+): () => void {
+  const apps = window.SteamClient?.Apps;
+  const unregs: Array<{ unregister?: () => void }> = [];
+  const expected = toUnsignedAppId(expectedAppId);
 
   try {
-    // Common Non-Steam / Decky signature.
-    apps.RunGame(id, launchOptions || "", -1, 0);
-    console.log("PML RunGame once", id);
-    return true;
+    if (typeof apps?.RegisterForGameActionShowError === "function") {
+      unregs.push(
+        apps.RegisterForGameActionShowError(
+          (_gid: any, appId: any, action: any, error: any) => {
+            const id = toUnsignedAppId(String(appId ?? ""));
+            if (id && id !== expected) {
+              return;
+            }
+            onError(
+              `Steam launch error (${action || "LaunchApp"}): ${String(
+                error || "unknown"
+              )}`
+            );
+          }
+        )
+      );
+    }
   } catch (err) {
-    console.warn("RunGame(-1,0) failed", err);
+    console.warn("RegisterForGameActionShowError failed", err);
   }
+
+  return () => {
+    for (const u of unregs) {
+      try {
+        u?.unregister?.();
+      } catch {
+        // ignore
+      }
+    }
+  };
+}
+
+/**
+ * Launch only — no reconfigure.
+ * RunGame wants the 32-bit AppID. Optionally fall back to ExecuteSteamURL
+ * with the Non-Steam 64-bit id. Never use location.href (freezes Game Mode).
+ */
+async function launchConfiguredApp(appId: string): Promise<{
+  ok: boolean;
+  method: string;
+  error?: string;
+}> {
+  const apps = window.SteamClient?.Apps;
+  const id = toUnsignedAppId(appId);
+  if (!id) {
+    return { ok: false, method: "none", error: "Missing AppID" };
+  }
+
+  let launchError = "";
+  const stopWatch = watchLaunchErrors(id, (msg) => {
+    launchError = msg;
+    console.warn("PML", msg);
+  });
+
   try {
-    apps.RunGame(id, launchOptions || "", 0, 0);
-    console.log("PML RunGame once fallback", id);
-    return true;
-  } catch (err) {
-    console.warn("RunGame(0,0) failed", err);
+    // Leave Decky QAM so Game Mode can focus the launch transition.
+    navigateToApp(id);
+    await sleep(350);
+
+    if (apps && typeof apps.RunGame === "function") {
+      try {
+        // Empty launchOptions — do not prepend stored Proton/%command% options.
+        // Library-details source matches pressing Play on the game page.
+        apps.RunGame(id, "", -1, 100);
+        console.log("PML RunGame", id, "-1,100");
+        await sleep(1200);
+        if (!launchError) {
+          return { ok: true, method: "RunGame" };
+        }
+      } catch (err) {
+        console.warn("RunGame failed", err);
+      }
+    }
+
+    // Safe URI fallback (ExecuteSteamURL only — never location.href).
+    const launch64 = toNonSteamLaunchId64(id);
+    if (launch64 && window.SteamClient?.URL?.ExecuteSteamURL) {
+      try {
+        const url = `steam://rungameid/${launch64}`;
+        window.SteamClient.URL.ExecuteSteamURL(url);
+        console.log("PML ExecuteSteamURL", url);
+        await sleep(1200);
+        if (!launchError) {
+          return { ok: true, method: "ExecuteSteamURL" };
+        }
+      } catch (err) {
+        console.warn("ExecuteSteamURL failed", err);
+      }
+    }
+
+    return {
+      ok: false,
+      method: "failed",
+      error:
+        launchError ||
+        `Launch did not start for AppID ${id}. Open Non-Steam → Silksong → Play.`,
+    };
+  } finally {
+    stopWatch();
   }
-  return false;
 }
 
 export async function ensureConfiguredShortcut(
-  req: SteamShortcutRequest,
-  opts?: { lightConfigure?: boolean }
+  req: SteamShortcutRequest
 ): Promise<{ appId: string; compatTool: string }> {
   const apps = window.SteamClient?.Apps;
   if (!apps?.AddShortcut) {
@@ -356,11 +469,10 @@ export async function ensureConfiguredShortcut(
     throw new Error("SteamClient.Apps.AddShortcut did not return an AppID");
   }
 
-  const compatTool = await configureShortcut(
-    appId,
-    { ...req, start_dir: startDir },
-    opts?.lightConfigure === true
-  );
+  const compatTool = await configureShortcut(appId, {
+    ...req,
+    start_dir: startDir,
+  });
 
   return { appId, compatTool };
 }
@@ -377,17 +489,22 @@ export async function addGameToSteam(
     const { appId, compatTool } = await ensureConfiguredShortcut(req);
     return { ok: true, appId: Number(appId), compatTool };
   } catch (err) {
-    // Never soft-restart Steam from here — that can black-screen Game Mode.
     return { ok: false, error: String(err) };
   }
 }
 
+/**
+ * Launch without re-touching Proton/exe settings.
+ * Reconfiguring right before RunGame is a common reason Non-Steam Proton
+ * titles appear to "launch" then immediately do nothing.
+ */
 export async function launchSteamGame(
   req: SteamShortcutRequest
 ): Promise<{
   ok: boolean;
   appId?: number;
   compatTool?: string;
+  method?: string;
   error?: string;
 }> {
   try {
@@ -398,42 +515,66 @@ export async function launchSteamGame(
       };
     }
 
-    // Prefer existing library entry; only light-touch Proton before one RunGame.
-    const existing = await findExistingShortcutAppId(req.game_name, req.exe);
-    let appId = existing || "";
-    let compatTool = "";
+    let appId =
+      (await findExistingShortcutAppId(req.game_name, req.exe)) ||
+      (asIdString(req.steam_app_id) &&
+      asIdString(req.steam_app_id) !== asIdString(req.shortcut_appid)
+        ? toUnsignedAppId(String(req.steam_app_id))
+        : "");
 
-    if (appId) {
-      compatTool = await configureShortcut(appId, req, true);
-    } else {
-      const ensured = await ensureConfiguredShortcut(req, {
-        lightConfigure: false,
-      });
+    // Only create/configure if the shortcut is missing from the live library.
+    if (!appId) {
+      const ensured = await ensureConfiguredShortcut(req);
       appId = ensured.appId;
-      compatTool = ensured.compatTool;
+      const result = await launchConfiguredApp(appId);
+      return {
+        ok: result.ok,
+        appId: Number(appId),
+        compatTool: ensured.compatTool,
+        method: result.method,
+        error: result.error,
+      };
     }
 
     console.log(
-      "PML launching once",
+      "PML launch without reconfigure",
       req.game_name,
       "appId=",
       appId,
-      "compat=",
-      compatTool,
       "exe=",
       req.exe
     );
 
-    const ok = await runGameOnce(appId, req.launch_options || "");
-    if (!ok) {
+    const result = await launchConfiguredApp(appId);
+    return {
+      ok: result.ok,
+      appId: Number(appId),
+      method: result.method,
+      error: result.error,
+    };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+/** Open the Non-Steam game page so the user can press Play manually. */
+export async function openGameInLibrary(
+  req: Pick<SteamShortcutRequest, "game_name" | "exe" | "steam_app_id">
+): Promise<{ ok: boolean; appId?: number; error?: string }> {
+  try {
+    let appId =
+      (await findExistingShortcutAppId(req.game_name, req.exe || "")) ||
+      (asIdString(req.steam_app_id)
+        ? toUnsignedAppId(String(req.steam_app_id))
+        : "");
+    if (!appId) {
       return {
         ok: false,
-        appId: Number(appId),
-        compatTool,
-        error: `RunGame failed for AppID ${appId}. Open the Non-Steam shortcut manually once.`,
+        error: "Game not found in Non-Steam library yet",
       };
     }
-    return { ok: true, appId: Number(appId), compatTool };
+    navigateToApp(appId);
+    return { ok: true, appId: Number(appId) };
   } catch (err) {
     return { ok: false, error: String(err) };
   }
