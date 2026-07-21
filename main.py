@@ -48,6 +48,8 @@ class Plugin:
         self._busy = False
         self._handled_mounts: Set[str] = set()
         self._lock = asyncio.Lock()
+        self._last_launch_app_id: str = ""
+        self._last_launch_monotonic: float = 0.0
         self._status = self._store.settings.last_status or "Ready"
         self._progress = 0.0
         self._progress_message = ""
@@ -171,17 +173,35 @@ class Plugin:
         return await self.get_status()
 
     async def backend_launch(self, app_id: str) -> Dict[str, Any]:
-        """Fallback launch via steam:// using the live SteamClient AppID."""
+        """Launch via steam:// using the live SteamClient AppID (once)."""
         try:
+            import time
+
             value = int(str(app_id).strip())
             if value < 0:
                 unsigned = (value + 0x100000000) & 0xFFFFFFFF
             else:
                 unsigned = value & 0xFFFFFFFF
+            app_key = str(unsigned)
+            now = time.monotonic()
+            # Debounce: same AppID within 45s = ignore (stops "Game already running").
+            if (
+                app_key
+                and app_key == getattr(self, "_last_launch_app_id", "")
+                and (now - float(getattr(self, "_last_launch_monotonic", 0.0))) < 45.0
+            ):
+                await self._log(
+                    f"[launch10] Skipping duplicate launch for {app_key} "
+                    "(already launched recently)"
+                )
+                return await self.get_status()
+
             launch64 = (unsigned << 32) | 0x02000000
             await self._log(
-                f"[launch9] backend_launch unsigned={unsigned} launch64={launch64}"
+                f"[launch10] backend_launch unsigned={unsigned} launch64={launch64}"
             )
+            self._last_launch_app_id = app_key
+            self._last_launch_monotonic = now
             await launch_steam_app(launch64, shortcut_appid=unsigned)
             await self._set_status("Launch requested (backend)", progress=100.0)
             return await self.get_status()
@@ -585,15 +605,16 @@ class Plugin:
                 "start_dir": str(info.resolved_start_dir()),
                 "launch_options": info.resolved_launch_options(),
                 "compat_tool": info.compat_tool or "proton_experimental",
-                "should_launch": bool(should_launch),
+                # Frontend only registers the shortcut; backend does the single launch.
+                "should_launch": False,
                 "vdf_launch_id": vdf_launch_s,
-                # Real SteamClient id only — empty means frontend must AddShortcut.
                 "steam_app_id": (
                     saved_app_id if saved_app_id not in {"", "0"} else "0"
                 ),
                 "shortcut_appid": shortcut_appid_s,
                 "already_installed": bool(already and not force_recopy),
                 "needs_add_shortcut": True,
+                "auto_launch_pending": bool(should_launch),
             }
 
             await self._set_status(
@@ -625,23 +646,19 @@ class Plugin:
                 await self._emit_status()
                 launch_id = refreshed if refreshed not in {"", "0"} else "0"
                 if launch_id not in {"", "0"}:
-                    steam_payload["steam_app_id"] = launch_id
-                    steam_payload["needs_add_shortcut"] = False
-                    await decky.emit("pml_launch_game", steam_payload)
-                    await self._log(
-                        f"[launch9] Frontend launch event for steam_app_id={launch_id}"
-                    )
+                    # Single launch only — do not also emit pml_launch_game
+                    # (that caused "Game already running" on card reinsert).
                     try:
                         await self.backend_launch(launch_id)
                         await self._log(
-                            f"[launch9] Backend steam:// launch issued for {launch_id}"
+                            f"[launch10] Single backend steam:// launch for {launch_id}"
                         )
                     except Exception as exc:  # noqa: BLE001
-                        await self._log(f"[launch9] backend_launch error: {exc}")
+                        await self._log(f"[launch10] backend_launch error: {exc}")
                 else:
                     await self._log(
-                        "[launch9] No Steam AppID reported yet; "
-                        "frontend should_launch path must create+launch"
+                        "[launch10] No Steam AppID yet; skipping auto-launch "
+                        "(use Launch last game now after Add/Fix)"
                     )
                 await self._set_status("Launch requested", progress=100.0)
                 await notify("Physical Media Launcher", f"Launching {info.game_name}")
