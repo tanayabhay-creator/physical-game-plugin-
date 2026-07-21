@@ -72,14 +72,21 @@ if [[ ! -f "${TARGET}/main.py" ]]; then
   echo "ERROR: main.py missing at ${TARGET}"
   exit 1
 fi
-if ! grep -q "2026-07-21-launch11" "${TARGET}/main.py"; then
-  echo "ERROR: new backend marker not found in main.py"
+# Read build marker from the installed main.py so this script cannot drift.
+BUILD_MARKER="$(
+  grep -oE '2026-07-21-launch[0-9]+' "${TARGET}/main.py" | head -1 || true
+)"
+if [[ -z "${BUILD_MARKER}" ]]; then
+  echo "ERROR: no plugin_build marker (2026-07-21-launchN) found in main.py"
+  echo "---- main.py plugin_build lines ----"
+  grep -n "plugin_build" "${TARGET}/main.py" || true
   exit 1
 fi
 if [[ ! -f "${TARGET}/dist/index.js" ]]; then
   echo "WARNING: dist/index.js missing"
 fi
-echo "OK: $(grep -n '2026-07-21-launch11' "${TARGET}/main.py" | head -1)"
+echo "OK: plugin_build marker ${BUILD_MARKER}"
+echo "OK: $(grep -n 'plugin_build' "${TARGET}/main.py" | head -3)"
 
 echo "==> [6/6] Restarting Decky loader..."
 if systemctl list-unit-files 2>/dev/null | grep -q '^plugin_loader.service'; then
@@ -101,7 +108,7 @@ echo " Plugin path: ${TARGET}"
 echo "======================================================"
 echo "Next:"
 echo "  1. Game Mode -> open Physical Media Launcher"
-echo "  2. Plugin build must show: 2026-07-21-launch11"
+echo "  2. Plugin build must show: ${BUILD_MARKER}"
 echo "  3. Start Transfer once"
 echo "  4. Launch last game now"
 echo "If build still says unknown: reboot the Steam Deck."
