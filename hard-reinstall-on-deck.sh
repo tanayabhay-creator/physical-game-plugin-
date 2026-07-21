@@ -1,58 +1,108 @@
 #!/usr/bin/env bash
 # Hard reinstall + Decky restart for Physical Media Launcher.
+# ALWAYS fixes ownership first (SteamOS Permission denied).
 set -euo pipefail
 
 USER_NAME="$(id -un)"
 HOME_DIR="${HOME:-/home/deck}"
-TARGET="${HOME_DIR}/homebrew/plugins/PhysicalMediaLauncher"
+PLUGINS_DIR="${HOME_DIR}/homebrew/plugins"
+TARGET="${PLUGINS_DIR}/PhysicalMediaLauncher"
 BRANCH="cursor/physical-media-launcher-006e"
 REPO_URL="https://github.com/tanayabhay-creator/physical-game-plugin-.git"
-WORK="/tmp/pml-hard-$$"
+WORK="/tmp/pml-hard-${USER_NAME}-$$"
+
+echo "======================================================"
+echo " Physical Media Launcher — HARD REINSTALL"
+echo "======================================================"
 
 if [[ "${USER_NAME}" == "root" ]]; then
-  echo "Do not run as root."
+  echo "ERROR: Do not run this whole script with sudo."
+  echo "Run as deck user. Only enter password when sudo asks."
   exit 1
 fi
 
-cd /tmp
-echo "==> Removing old plugin folders..."
-rm -rf "${TARGET}"
-# Catch accidental alternate folder names from earlier installs.
-rm -rf "${HOME_DIR}/homebrew/plugins/physical-media-launcher" \
-       "${HOME_DIR}/homebrew/plugins/physical-game-plugin-" \
-       "${HOME_DIR}/homebrew/plugins/PhysicalMediaLauncher-" || true
+# Leave any broken cwd.
+cd /tmp || cd "${HOME_DIR}" || true
 
-echo "==> Downloading ${BRANCH}..."
-rm -rf "${WORK}"
+echo "==> [1/6] Fixing ownership (sudo password may be required)..."
+sudo chown -R "${USER_NAME}:${USER_NAME}" \
+  "${HOME_DIR}/homebrew" \
+  "${HOME_DIR}/Downloads" \
+  "${HOME_DIR}/Games" \
+  2>/dev/null || true
+
+if [[ -d "${HOME_DIR}/homebrew" ]]; then
+  sudo chown -R "${USER_NAME}:${USER_NAME}" "${HOME_DIR}/homebrew" || true
+fi
+sudo mkdir -p "${PLUGINS_DIR}" 2>/dev/null || mkdir -p "${PLUGINS_DIR}"
+sudo chown -R "${USER_NAME}:${USER_NAME}" "${PLUGINS_DIR}" || true
+chmod u+rwx "${PLUGINS_DIR}" || true
+
+echo "==> [2/6] Removing old plugin folders..."
+# Use sudo rm in case leftovers are root-owned.
+sudo rm -rf \
+  "${TARGET}" \
+  "${PLUGINS_DIR}/physical-media-launcher" \
+  "${PLUGINS_DIR}/physical-game-plugin-" \
+  "${PLUGINS_DIR}/PhysicalMediaLauncher-" \
+  /tmp/pml-get \
+  /tmp/pml-install-deck \
+  /tmp/pml-work-deck-* \
+  /tmp/pml-hard-* \
+  2>/dev/null || true
+
+# Recreate work dir after cleanup.
+WORK="/tmp/pml-hard-${USER_NAME}-$$"
 mkdir -p "${WORK}"
+cd /tmp
+
+echo "==> [3/6] Downloading ${BRANCH} into ${WORK} ..."
 git clone --branch "${BRANCH}" --single-branch "${REPO_URL}" "${WORK}/repo"
 
-echo "==> Installing..."
-mkdir -p "${HOME_DIR}/homebrew/plugins"
+echo "==> [4/6] Installing into ${TARGET} ..."
+mkdir -p "${PLUGINS_DIR}"
+mkdir -p "${TARGET}"
 cp -a "${WORK}/repo/." "${TARGET}/"
 rm -rf "${TARGET}/.git" "${TARGET}/node_modules" "${TARGET}/tests" || true
-sudo chown -R "${USER_NAME}:${USER_NAME}" "${TARGET}" 2>/dev/null || true
+sudo chown -R "${USER_NAME}:${USER_NAME}" "${TARGET}" || true
+chmod -R u+rwX "${TARGET}" 2>/dev/null || true
 
-echo "==> Verify files:"
-ls -la "${TARGET}/main.py" "${TARGET}/dist/index.js"
-grep -n "2026-07-21-launch3" "${TARGET}/main.py" | head -3 || {
-  echo "ERROR: new main.py marker not found"
+echo "==> [5/6] Verifying install..."
+if [[ ! -f "${TARGET}/main.py" ]]; then
+  echo "ERROR: main.py missing at ${TARGET}"
   exit 1
-}
+fi
+if ! grep -q "2026-07-21-launch3" "${TARGET}/main.py"; then
+  echo "ERROR: new backend marker not found in main.py"
+  exit 1
+fi
+if [[ ! -f "${TARGET}/dist/index.js" ]]; then
+  echo "WARNING: dist/index.js missing"
+fi
+echo "OK: $(grep -n '2026-07-21-launch3' "${TARGET}/main.py" | head -1)"
 
-echo "==> Restarting Decky plugin loader..."
-if systemctl list-unit-files 2>/dev/null | grep -q plugin_loader.service; then
+echo "==> [6/6] Restarting Decky loader..."
+if systemctl list-unit-files 2>/dev/null | grep -q '^plugin_loader.service'; then
   sudo systemctl restart plugin_loader.service
-elif systemctl list-unit-files 2>/dev/null | grep -q decky-loader; then
-  sudo systemctl restart decky-loader.service || sudo systemctl restart plugin_loader
+elif systemctl --user list-unit-files 2>/dev/null | grep -q plugin_loader; then
+  systemctl --user restart plugin_loader.service || true
 else
-  # Fallback used on many Decky installs
-  sudo systemctl restart plugin_loader.service || true
+  sudo systemctl restart plugin_loader.service 2>/dev/null || \
+  sudo systemctl restart plugin_loader 2>/dev/null || \
+  echo "NOTE: Could not restart plugin_loader automatically. Reboot the Deck."
 fi
 
 rm -rf "${WORK}" || true
+
 echo
-echo "SUCCESS."
-echo "In Game Mode: open Physical Media Launcher"
-echo "Plugin build must show: 2026-07-21-launch3"
-echo "Then press Start Transfer once, then Launch last game now."
+echo "======================================================"
+echo " SUCCESS"
+echo " Plugin path: ${TARGET}"
+echo "======================================================"
+echo "Next:"
+echo "  1. Game Mode -> open Physical Media Launcher"
+echo "  2. Plugin build must show: 2026-07-21-launch3"
+echo "  3. Start Transfer once"
+echo "  4. Launch last game now"
+echo "If build still says unknown: reboot the Steam Deck."
+echo
