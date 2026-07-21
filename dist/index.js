@@ -575,7 +575,6 @@ const rescanMedia = callable("rescan_media");
 const startTransfer = callable("start_transfer");
 const resetBusy = callable("reset_busy");
 const reportSteamAppId = callable("report_steam_appid");
-callable("backend_launch");
 /** Deduplicate launches within this Game Mode session. */
 let lastFrontendLaunchAppId = "";
 let lastFrontendLaunchAt = 0;

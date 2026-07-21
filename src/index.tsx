@@ -40,7 +40,6 @@ const reportSteamAppId = callable<
   [game_name: string, exe: string, app_id: number],
   PluginStatus
 >("report_steam_appid");
-const backendLaunch = callable<[app_id: string], PluginStatus>("backend_launch");
 
 /** Deduplicate launches within this Game Mode session. */
 let lastFrontendLaunchAppId = "";
