@@ -40,6 +40,7 @@ const reportSteamAppId = callable<
   [game_name: string, exe: string, app_id: number],
   PluginStatus
 >("report_steam_appid");
+const backendLaunch = callable<[app_id: string], PluginStatus>("backend_launch");
 
 function Content() {
   const [state, setState] = useState<PluginStatus>(EMPTY_STATUS);
@@ -211,6 +212,12 @@ function Content() {
         } catch (err) {
           console.warn("report_steam_appid failed", err);
         }
+        // Backend steam:// fallback after Proton mapping is persisted.
+        try {
+          await backendLaunch(String(result.appId));
+        } catch (err) {
+          console.warn("backend_launch failed", err);
+        }
       }
 
       if (!next.plugin_build) {
@@ -224,8 +231,8 @@ function Content() {
         title: result.ok ? "Launching with Proton" : "Launch failed",
         body: result.ok
           ? `${next.last_game || "game"}${
-              result.appId ? ` (AppID ${result.appId})` : ""
-            }`
+              result.appId ? ` (AppID ${result.appId}` : ""
+            }${result.compatTool ? `, ${result.compatTool})` : result.appId ? ")" : ""}`
           : result.error || "Could not launch",
       });
     } catch (err) {
@@ -560,6 +567,7 @@ export default definePlugin(() => {
               ...payload,
               steam_app_id: result.appId ? String(result.appId) : "0",
               needs_add_shortcut: false,
+              compat_tool: payload.compat_tool || "proton_experimental",
             });
             if (launch.ok && launch.appId) {
               try {
@@ -571,12 +579,23 @@ export default definePlugin(() => {
               } catch (err) {
                 console.warn("report_steam_appid failed", err);
               }
+              try {
+                await backendLaunch(String(launch.appId));
+              } catch (err) {
+                console.warn("backend_launch failed", err);
+              }
             }
             toaster.toast({
               title: launch.ok ? "Launching with Proton" : "Launch failed",
               body: launch.ok
                 ? `${payload.game_name}${
-                    launch.appId ? ` (AppID ${launch.appId})` : ""
+                    launch.appId ? ` (AppID ${launch.appId}` : ""
+                  }${
+                    launch.compatTool
+                      ? `, ${launch.compatTool})`
+                      : launch.appId
+                        ? ")"
+                        : ""
                   }`
                 : launch.error || "Could not launch",
             });

@@ -36,6 +36,29 @@ function asIdString(value: number | string | undefined | null): string {
   return text;
 }
 
+/** Normalize possibly-signed Steam AppIDs to unsigned 32-bit decimal strings. */
+export function toUnsignedAppId(id: string | number): string {
+  try {
+    let n = BigInt(String(id).trim());
+    if (n < 0n) {
+      n = n + 0x100000000n;
+    }
+    return (n & 0xffffffffn).toString();
+  } catch {
+    return String(id);
+  }
+}
+
+/** Non-Steam steam://rungameid target: (appid << 32) | 0x02000000 */
+export function toNonSteamLaunchId64(unsignedAppId: string | number): string {
+  try {
+    const app = BigInt(toUnsignedAppId(unsignedAppId));
+    return ((app << 32n) | 0x02000000n).toString();
+  } catch {
+    return "";
+  }
+}
+
 function looksLikeWindowsExe(exePath: string): boolean {
   return exePath.toLowerCase().endsWith(".exe");
 }
@@ -61,6 +84,17 @@ function resolveCompatTool(req: SteamShortcutRequest): string {
   return looksLikeWindowsExe(req.exe || "") ? "proton_experimental" : "";
 }
 
+function quotePath(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed;
+  }
+  return `"${trimmed}"`;
+}
+
 function appMatches(
   app: any,
   appName: string,
@@ -81,23 +115,18 @@ function appMatches(
   const exeNorm = exePath.replace(/"/g, "");
   const exeField = exe.replace(/"/g, "");
   if (name === appName) {
-    return appid;
+    return toUnsignedAppId(appid);
   }
   if (exeNorm && exeField && (exeField.includes(exeNorm) || exeNorm.includes(exeField))) {
-    return appid;
+    return toUnsignedAppId(appid);
   }
   return null;
 }
 
-/**
- * Find a Non-Steam shortcut that is already visible in the live Game Mode library.
- * Never treat VDF CRC32 IDs as proof the shortcut is live.
- */
 async function findExistingShortcutAppId(
   appName: string,
   exePath: string
 ): Promise<string | null> {
-  // collectionStore is what Game Mode's library actually uses.
   try {
     const cs = window.collectionStore;
     const bags: any[] = [
@@ -149,17 +178,82 @@ async function findExistingShortcutAppId(
   return null;
 }
 
+async function pickAvailableCompatTool(
+  appId: number,
+  preferred: string
+): Promise<string> {
+  const preferredList = [
+    preferred,
+    "proton_experimental",
+    "proton_hotfix",
+    "proton_10",
+    "proton_9",
+    "proton_8",
+  ].filter(Boolean);
+
+  const collectNames = (tools: any): string[] => {
+    if (!Array.isArray(tools)) {
+      return [];
+    }
+    return tools
+      .map((t) => String(t?.strToolName ?? t?.name ?? t?.toolName ?? ""))
+      .filter(Boolean);
+  };
+
+  const apps = window.SteamClient?.Apps;
+  const settings = window.SteamClient?.Settings;
+
+  let names: string[] = [];
+  try {
+    if (typeof apps?.GetAvailableCompatTools === "function") {
+      names = collectNames(
+        await Promise.resolve(apps.GetAvailableCompatTools(appId))
+      );
+    }
+  } catch (err) {
+    console.warn("GetAvailableCompatTools failed", err);
+  }
+  if (!names.length) {
+    try {
+      if (typeof settings?.GetGlobalCompatTools === "function") {
+        names = collectNames(await Promise.resolve(settings.GetGlobalCompatTools()));
+      }
+    } catch (err) {
+      console.warn("GetGlobalCompatTools failed", err);
+    }
+  }
+
+  if (names.length) {
+    console.log("PML available compat tools", names);
+    for (const want of preferredList) {
+      const exact = names.find((n) => n === want);
+      if (exact) {
+        return exact;
+      }
+    }
+    const proton = names.find(
+      (n) => /proton/i.test(n) && !/steam.?linux.?runtime/i.test(n)
+    );
+    if (proton) {
+      return proton;
+    }
+  }
+
+  return preferredList[0] || "proton_experimental";
+}
+
 async function configureShortcut(
   appId: string,
   req: SteamShortcutRequest
-): Promise<void> {
+): Promise<string> {
   const apps = window.SteamClient?.Apps;
   if (!apps) {
-    return;
+    return "";
   }
 
   const startDir = resolveStartDir(req);
-  const numericId = Number(appId);
+  const unsigned = toUnsignedAppId(appId);
+  const numericId = Number(unsigned);
 
   try {
     if (typeof apps.SetShortcutName === "function") {
@@ -170,15 +264,16 @@ async function configureShortcut(
   }
   try {
     if (typeof apps.SetShortcutExe === "function") {
-      // Steam expects quoted exe paths for Non-Steam shortcuts.
-      await Promise.resolve(apps.SetShortcutExe(numericId, `"${req.exe}"`));
+      await Promise.resolve(apps.SetShortcutExe(numericId, quotePath(req.exe)));
     }
   } catch {
     // ignore
   }
   try {
     if (typeof apps.SetShortcutStartDir === "function" && startDir) {
-      await Promise.resolve(apps.SetShortcutStartDir(numericId, `"${startDir}"`));
+      await Promise.resolve(
+        apps.SetShortcutStartDir(numericId, quotePath(startDir))
+      );
     }
   } catch {
     // ignore
@@ -193,23 +288,51 @@ async function configureShortcut(
     // ignore
   }
 
-  // Required for Windows .exe Non-Steam games on Steam Deck.
-  const compat = resolveCompatTool(req);
-  if (compat && typeof apps.SpecifyCompatTool === "function") {
-    const tools = [compat, "proton_experimental", "proton_hotfix", "proton_9"];
-    const unique = [...new Set(tools.filter(Boolean))];
-    for (const tool of unique) {
+  let applied = "";
+  const preferred = resolveCompatTool(req);
+  if (preferred && typeof apps.SpecifyCompatTool === "function") {
+    const tool = await pickAvailableCompatTool(numericId, preferred);
+    try {
+      await Promise.resolve(apps.SpecifyCompatTool(numericId, tool));
+      applied = tool;
+      console.log("PML SpecifyCompatTool", unsigned, tool);
+    } catch (err) {
+      console.warn("SpecifyCompatTool failed", tool, err);
+      // Still try the preferred name once more.
       try {
-        await Promise.resolve(apps.SpecifyCompatTool(numericId, tool));
-        console.log("PML SpecifyCompatTool", appId, tool);
-        break;
-      } catch (err) {
-        console.warn("SpecifyCompatTool failed", tool, err);
+        await Promise.resolve(apps.SpecifyCompatTool(numericId, preferred));
+        applied = preferred;
+      } catch (err2) {
+        console.warn("SpecifyCompatTool preferred failed", preferred, err2);
       }
     }
   }
 
-  await sleep(500);
+  // Give Steam time to persist compat tool + shortcut fields before RunGame.
+  await sleep(1500);
+  return applied;
+}
+
+function launchViaSteamUrl(id: string): boolean {
+  const url = `steam://rungameid/${id}`;
+  let ok = false;
+  try {
+    if (window.SteamClient?.URL?.ExecuteSteamURL) {
+      window.SteamClient.URL.ExecuteSteamURL(url);
+      console.log("PML ExecuteSteamURL", url);
+      ok = true;
+    }
+  } catch (err) {
+    console.warn("ExecuteSteamURL failed", url, err);
+  }
+  try {
+    window.location.href = url;
+    console.log("PML location.href", url);
+    ok = true;
+  } catch (err) {
+    console.warn("location.href failed", url, err);
+  }
+  return ok;
 }
 
 async function runGame(appId: string, launchOptions = ""): Promise<boolean> {
@@ -217,35 +340,66 @@ async function runGame(appId: string, launchOptions = ""): Promise<boolean> {
   if (!apps || typeof apps.RunGame !== "function") {
     return false;
   }
-  const id = asIdString(appId);
+  const id = toUnsignedAppId(appId);
   if (!id) {
     return false;
   }
 
+  // Documented usage in Decky examples uses param2=0; Non-Steam often needs -1.
   const attempts: Array<[number, number]> = [
     [-1, 0],
     [0, 0],
     [-1, 1],
+    [0, 100],
   ];
   for (const [param2, launchSource] of attempts) {
     try {
-      await Promise.resolve(apps.RunGame(id, launchOptions || "", param2, launchSource));
+      apps.RunGame(id, launchOptions || "", param2, launchSource);
       console.log("PML RunGame", id, param2, launchSource);
       return true;
     } catch (err) {
-      console.warn("RunGame string id failed", id, param2, err);
-    }
-    try {
-      await Promise.resolve(
-        apps.RunGame(Number(id), launchOptions || "", param2, launchSource)
-      );
-      console.log("PML RunGame(number)", id, param2, launchSource);
-      return true;
-    } catch (err) {
-      console.warn("RunGame number id failed", id, param2, err);
+      console.warn("RunGame failed", id, param2, launchSource, err);
     }
   }
   return false;
+}
+
+/**
+ * Launch using every known Game Mode path for Non-Steam titles.
+ * Returns true if at least one launch call was accepted (Steam may still show UI errors).
+ */
+export async function launchByAppId(
+  appId: string,
+  launchOptions = ""
+): Promise<boolean> {
+  const unsigned = toUnsignedAppId(appId);
+  const launch64 = toNonSteamLaunchId64(unsigned);
+  let launched = false;
+
+  launched = (await runGame(unsigned, launchOptions)) || launched;
+  await sleep(250);
+
+  // Plain AppID URI (works for many Non-Steam shortcuts on Deck).
+  launched = launchViaSteamUrl(unsigned) || launched;
+  await sleep(150);
+
+  // Classic Non-Steam 64-bit launch id derived from the LIVE SteamClient AppID.
+  if (launch64) {
+    launched = launchViaSteamUrl(launch64) || launched;
+  }
+
+  try {
+    const launchUrl = `steam://launch/${unsigned}`;
+    if (window.SteamClient?.URL?.ExecuteSteamURL) {
+      window.SteamClient.URL.ExecuteSteamURL(launchUrl);
+      console.log("PML ExecuteSteamURL", launchUrl);
+      launched = true;
+    }
+  } catch (err) {
+    console.warn("steam://launch failed", err);
+  }
+
+  return launched;
 }
 
 export function softRestartSteam(): boolean {
@@ -262,14 +416,9 @@ export function softRestartSteam(): boolean {
   return false;
 }
 
-/**
- * Ensure a Non-Steam shortcut exists in the LIVE Game Mode library.
- * Always calls AddShortcut when the game is not already visible — never trust
- * VDF CRC32 IDs alone (those only show up after a Steam restart).
- */
 export async function ensureConfiguredShortcut(
   req: SteamShortcutRequest
-): Promise<string> {
+): Promise<{ appId: string; compatTool: string }> {
   const apps = window.SteamClient?.Apps;
   if (!apps?.AddShortcut) {
     throw new Error("SteamClient.Apps.AddShortcut is unavailable");
@@ -281,11 +430,9 @@ export async function ensureConfiguredShortcut(
   const saved = asIdString(req.steam_app_id);
   const vdfId = asIdString(req.shortcut_appid);
 
-  // Reuse a just-created SteamClient AppID from the add handler when the
-  // library overview has not refreshed yet. Never reuse the VDF CRC32 id.
   if (!appId && saved && saved !== vdfId && req.needs_add_shortcut === false) {
     console.log("PML reusing just-created SteamClient AppID", saved);
-    appId = saved;
+    appId = toUnsignedAppId(saved);
   }
 
   if (!appId) {
@@ -296,7 +443,6 @@ export async function ensureConfiguredShortcut(
       startDir,
       req.launch_options || ""
     );
-    // Documented signature: (appName, executablePath, directory, launchOptions)
     const created = await Promise.resolve(
       apps.AddShortcut(
         req.game_name,
@@ -305,7 +451,7 @@ export async function ensureConfiguredShortcut(
         req.launch_options || ""
       )
     );
-    appId = asIdString(created as number | string);
+    appId = toUnsignedAppId(String(created));
     console.log("PML AddShortcut returned", appId);
   }
 
@@ -313,30 +459,37 @@ export async function ensureConfiguredShortcut(
     throw new Error("SteamClient.Apps.AddShortcut did not return an AppID");
   }
 
-  await configureShortcut(appId, { ...req, start_dir: startDir });
+  const compatTool = await configureShortcut(appId, {
+    ...req,
+    start_dir: startDir,
+  });
 
-  // Confirm it became visible; if not, soft-restart so VDF/fallback loads.
   await sleep(300);
   const visible = await findExistingShortcutAppId(req.game_name, req.exe);
   if (visible) {
-    return visible;
+    return { appId: visible, compatTool };
   }
   console.warn(
     "PML shortcut AppID",
     appId,
     "not yet visible in library — returning AddShortcut id anyway"
   );
-  return appId;
+  return { appId, compatTool };
 }
 
 export async function addGameToSteam(
   req: SteamShortcutRequest
-): Promise<{ ok: boolean; appId?: number; error?: string; restarted?: boolean }> {
+): Promise<{
+  ok: boolean;
+  appId?: number;
+  compatTool?: string;
+  error?: string;
+  restarted?: boolean;
+}> {
   try {
-    const appId = await ensureConfiguredShortcut(req);
-    return { ok: true, appId: Number(appId) };
+    const { appId, compatTool } = await ensureConfiguredShortcut(req);
+    return { ok: true, appId: Number(appId), compatTool };
   } catch (err) {
-    // Last resort: VDF was written by backend; soft-restart Steam so it loads.
     const restarted = softRestartSteam();
     return {
       ok: false,
@@ -348,13 +501,14 @@ export async function addGameToSteam(
   }
 }
 
-/**
- * Configure shortcut (with Proton for .exe) and launch via RunGame only.
- * Creates the live library entry first when missing.
- */
 export async function launchSteamGame(
   req: SteamShortcutRequest
-): Promise<{ ok: boolean; appId?: number; error?: string }> {
+): Promise<{
+  ok: boolean;
+  appId?: number;
+  compatTool?: string;
+  error?: string;
+}> {
   try {
     if (!req.exe) {
       return {
@@ -363,16 +517,28 @@ export async function launchSteamGame(
       };
     }
 
-    const appId = await ensureConfiguredShortcut(req);
-    const ok = await runGame(appId, req.launch_options || "");
+    const { appId, compatTool } = await ensureConfiguredShortcut(req);
+    console.log(
+      "PML launching",
+      req.game_name,
+      "appId=",
+      appId,
+      "compat=",
+      compatTool,
+      "exe=",
+      req.exe
+    );
+
+    const ok = await launchByAppId(appId, req.launch_options || "");
     if (!ok) {
       return {
         ok: false,
         appId: Number(appId),
-        error: `SteamClient.Apps.RunGame failed for AppID ${appId}`,
+        compatTool,
+        error: `All launch methods failed for AppID ${appId} (compat=${compatTool || "none"})`,
       };
     }
-    return { ok: true, appId: Number(appId) };
+    return { ok: true, appId: Number(appId), compatTool };
   } catch (err) {
     return { ok: false, error: String(err) };
   }

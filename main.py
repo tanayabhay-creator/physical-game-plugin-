@@ -22,7 +22,8 @@ if str(PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(PLUGIN_DIR))
 
 from backend.game_info import GameInfoError, find_game_info, load_game_info  # noqa: E402
-from backend.launcher import notify  # noqa: E402
+from backend.launcher import notify, launch_steam_app  # noqa: E402
+from backend.compat_tools import set_compat_tool_mapping  # noqa: E402
 from backend.media_watcher import MediaWatcher  # noqa: E402
 from backend.settings_store import SettingsStore  # noqa: E402
 from backend.shortcuts import ensure_non_steam_shortcut, lookup_shortcut_ids  # noqa: E402
@@ -115,7 +116,7 @@ class Plugin:
             "last_steam_app_id": steam_app_id,
             "last_vdf_launch_id": vdf_launch_id,
             "last_shortcut_appid": shortcut_appid,
-            "plugin_build": "2026-07-21-launch5",
+            "plugin_build": "2026-07-21-launch6",
             "log_lines": [str(x) for x in list(s.log_lines[-50:])],
             "busy": bool(self._busy),
             "detected_mounts": [str(x) for x in detected],
@@ -135,7 +136,12 @@ class Plugin:
     ) -> Dict[str, Any]:
         """Save the AppID returned by SteamClient.Apps.AddShortcut."""
         try:
-            app_id_s = str(int(app_id))
+            raw = int(app_id)
+            if raw < 0:
+                app_id_s = str((raw + 0x100000000) & 0xFFFFFFFF)
+            else:
+                app_id_s = str(raw & 0xFFFFFFFF)
+
             ids = dict(self._store.settings.steam_app_ids)
             if game_name:
                 ids[str(game_name)] = app_id_s
@@ -144,11 +150,18 @@ class Plugin:
             self._store.update(
                 steam_app_ids=ids,
                 last_steam_app_id=app_id_s,
-                last_shortcut_appid=app_id_s,
                 last_game=game_name or self._store.settings.last_game,
                 last_exe=exe or self._store.settings.last_exe,
             )
             await self._log(f"Saved Steam AppID {app_id_s} for '{game_name}'")
+
+            # Persist Proton mapping so Windows .exe Non-Steam titles can launch.
+            if str(exe).lower().endswith(".exe"):
+                ok = set_compat_tool_mapping(app_id_s, "proton_experimental")
+                await self._log(
+                    f"CompatToolMapping for {app_id_s}: "
+                    f"{'ok' if ok else 'failed'} (proton_experimental)"
+                )
         except Exception as exc:  # noqa: BLE001
             logger.exception("report_steam_appid failed")
             try:
@@ -156,6 +169,27 @@ class Plugin:
             except Exception:
                 pass
         return await self.get_status()
+
+    async def backend_launch(self, app_id: str) -> Dict[str, Any]:
+        """Fallback launch via steam:// using the live SteamClient AppID."""
+        try:
+            value = int(str(app_id).strip())
+            if value < 0:
+                unsigned = (value + 0x100000000) & 0xFFFFFFFF
+            else:
+                unsigned = value & 0xFFFFFFFF
+            launch64 = (unsigned << 32) | 0x02000000
+            await self._log(
+                f"[launch6] backend_launch unsigned={unsigned} launch64={launch64}"
+            )
+            await launch_steam_app(launch64, shortcut_appid=unsigned)
+            await self._set_status("Launch requested (backend)", progress=100.0)
+            return await self.get_status()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("backend_launch failed")
+            self._store.update(last_error=f"backend_launch: {exc}")
+            await self._log(f"ERROR backend_launch: {exc}")
+            return await self.get_status()
 
     async def launch_last_game(self) -> Dict[str, Any]:
         """Compatibility stub — frontend launches directly; this only returns IDs."""
@@ -178,7 +212,7 @@ class Plugin:
                 "last_steam_app_id": "0",
                 "last_vdf_launch_id": "0",
                 "last_shortcut_appid": "0",
-                "plugin_build": "2026-07-21-launch5",
+                "plugin_build": "2026-07-21-launch6",
                 "log_lines": [],
                 "busy": False,
                 "detected_mounts": [],
@@ -517,7 +551,7 @@ class Plugin:
                 launch_options=info.resolved_launch_options(),
             )
             await self._log(
-                f"[launch5] shortcuts.vdf {'created' if shortcut.created else 'updated'} "
+                f"[launch6] shortcuts.vdf {'created' if shortcut.created else 'updated'} "
                 f"appid={shortcut.appid}"
             )
 
@@ -537,7 +571,7 @@ class Plugin:
             # Drop poisoned saves where steam_app_id == VDF CRC32 id.
             if saved_app_id == shortcut_appid_s:
                 await self._log(
-                    f"[launch5] Clearing poisoned steam_app_id={saved_app_id} "
+                    f"[launch6] Clearing poisoned steam_app_id={saved_app_id} "
                     "(matched VDF CRC32; will re-AddShortcut)"
                 )
                 saved_app_id = "0"
@@ -555,7 +589,7 @@ class Plugin:
                     if saved_app_id not in {"", "0"}
                     else "0"
                 ),
-                plugin_build="2026-07-21-launch5",
+                plugin_build="2026-07-21-launch6",
             )
 
             steam_payload = {
@@ -581,7 +615,7 @@ class Plugin:
             await self._emit_status()
             await decky.emit("pml_add_to_steam", steam_payload)
             await self._log(
-                f"[launch5] Live AddShortcut requested for '{info.game_name}' "
+                f"[launch6] Live AddShortcut requested for '{info.game_name}' "
                 f"(vdf_appid={shortcut_appid_s}, saved_steam_app_id={saved_app_id}, "
                 f"should_launch={should_launch})"
             )

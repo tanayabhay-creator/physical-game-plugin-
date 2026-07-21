@@ -118,5 +118,48 @@ class ShortcutTests(unittest.TestCase):
             self.assertEqual(data["shortcuts"]["0"]["AppName"], "Demo")
 
 
+class CompatToolTests(unittest.TestCase):
+    def test_set_compat_tool_mapping_insert_and_update(self) -> None:
+        from backend.compat_tools import as_unsigned_appid, set_compat_tool_mapping
+
+        self.assertEqual(as_unsigned_appid(-304086084), "3990881212")
+        self.assertEqual(as_unsigned_appid(3990880212), "3990880212")
+        skeleton = (
+            '"InstallConfigStore"\n{\n'
+            '\t"Software"\n\t{\n'
+            '\t\t"Valve"\n\t\t{\n'
+            '\t\t\t"Steam"\n\t\t\t{\n'
+            '\t\t\t\t"CompatToolMapping"\n\t\t\t\t{\n'
+            "\t\t\t\t}\n"
+            "\t\t\t}\n"
+            "\t\t}\n"
+            "\t}\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "config.vdf"
+            cfg.write_text(skeleton, encoding="utf-8")
+            self.assertTrue(
+                set_compat_tool_mapping(
+                    3990880212,
+                    "proton_experimental",
+                    config_path=cfg,
+                )
+            )
+            text = cfg.read_text(encoding="utf-8")
+            self.assertIn('"3990880212"', text)
+            self.assertIn('"proton_experimental"', text)
+            self.assertTrue(
+                set_compat_tool_mapping(
+                    3990880212,
+                    "proton_9",
+                    config_path=cfg,
+                )
+            )
+            text2 = cfg.read_text(encoding="utf-8")
+            self.assertIn('"proton_9"', text2)
+            self.assertEqual(text2.count('"3990880212"'), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

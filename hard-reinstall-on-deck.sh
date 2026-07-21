@@ -72,14 +72,14 @@ if [[ ! -f "${TARGET}/main.py" ]]; then
   echo "ERROR: main.py missing at ${TARGET}"
   exit 1
 fi
-if ! grep -q "2026-07-21-launch5" "${TARGET}/main.py"; then
+if ! grep -q "2026-07-21-launch6" "${TARGET}/main.py"; then
   echo "ERROR: new backend marker not found in main.py"
   exit 1
 fi
 if [[ ! -f "${TARGET}/dist/index.js" ]]; then
   echo "WARNING: dist/index.js missing"
 fi
-echo "OK: $(grep -n '2026-07-21-launch5' "${TARGET}/main.py" | head -1)"
+echo "OK: $(grep -n '2026-07-21-launch6' "${TARGET}/main.py" | head -1)"
 
 echo "==> [6/6] Restarting Decky loader..."
 if systemctl list-unit-files 2>/dev/null | grep -q '^plugin_loader.service'; then
@@ -101,7 +101,7 @@ echo " Plugin path: ${TARGET}"
 echo "======================================================"
 echo "Next:"
 echo "  1. Game Mode -> open Physical Media Launcher"
-echo "  2. Plugin build must show: 2026-07-21-launch5"
+echo "  2. Plugin build must show: 2026-07-21-launch6"
 echo "  3. Start Transfer once"
 echo "  4. Launch last game now"
 echo "If build still says unknown: reboot the Steam Deck."
