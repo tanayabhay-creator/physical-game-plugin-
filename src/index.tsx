@@ -40,7 +40,6 @@ const reportSteamAppId = callable<
   [game_name: string, exe: string, app_id: number],
   PluginStatus
 >("report_steam_appid");
-const backendLaunch = callable<[app_id: string], PluginStatus>("backend_launch");
 
 function Content() {
   const [state, setState] = useState<PluginStatus>(EMPTY_STATUS);
@@ -211,12 +210,6 @@ function Content() {
           );
         } catch (err) {
           console.warn("report_steam_appid failed", err);
-        }
-        // Backend steam:// fallback after Proton mapping is persisted.
-        try {
-          await backendLaunch(String(result.appId));
-        } catch (err) {
-          console.warn("backend_launch failed", err);
         }
       }
 
@@ -578,11 +571,6 @@ export default definePlugin(() => {
                 );
               } catch (err) {
                 console.warn("report_steam_appid failed", err);
-              }
-              try {
-                await backendLaunch(String(launch.appId));
-              } catch (err) {
-                console.warn("backend_launch failed", err);
               }
             }
             toaster.toast({
