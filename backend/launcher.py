@@ -58,11 +58,15 @@ async def launch_steam_app(steam_launch_id: int, *, shortcut_appid: int | None =
     home = str(decky_user_home())
     user = Path(home).name or "deck"
     env = _deck_env()
+    # Non-Steam must use the 64-bit form: (appid << 32) | 0x02000000.
+    # Plain 32-bit steam://rungameid often shows "Game configuration unavailable".
     uris = [f"steam://rungameid/{steam_launch_id}"]
     if shortcut_appid is not None:
-        # Some Steam builds accept the raw shortcut appid as well.
-        uris.append(f"steam://rungameid/{shortcut_appid & 0xFFFFFFFF}")
-        uris.append(f"steam://launch/{shortcut_appid & 0xFFFFFFFF}")
+        unsigned = int(shortcut_appid) & 0xFFFFFFFF
+        # Rebuild 64-bit in case caller passed a short id by mistake.
+        rebuilt = (unsigned << 32) | 0x02000000
+        if rebuilt != int(steam_launch_id):
+            uris.insert(0, f"steam://rungameid/{rebuilt}")
 
     errors: List[str] = []
     running_as_root = os.geteuid() == 0

@@ -40,6 +40,34 @@ const reportSteamAppId = callable<
   [game_name: string, exe: string, app_id: number],
   PluginStatus
 >("report_steam_appid");
+const backendLaunch = callable<[app_id: string], PluginStatus>("backend_launch");
+
+async function launchWithBackendFallback(
+  req: Parameters<typeof launchSteamGame>[0]
+): Promise<Awaited<ReturnType<typeof launchSteamGame>>> {
+  const result = await launchSteamGame(req);
+  if (result.appId) {
+    try {
+      await reportSteamAppId(req.game_name, req.exe, result.appId);
+    } catch (err) {
+      console.warn("report_steam_appid failed", err);
+    }
+    // Backend steam:// as deck user — most reliable for Non-Steam in Game Mode.
+    try {
+      await backendLaunch(String(result.appId));
+      return {
+        ...result,
+        ok: true,
+        method: result.method
+          ? `${result.method}+backend`
+          : "backend",
+      };
+    } catch (err) {
+      console.warn("backend_launch failed", err);
+    }
+  }
+  return result;
+}
 
 function Content() {
   const [state, setState] = useState<PluginStatus>(EMPTY_STATUS);
@@ -177,8 +205,6 @@ function Content() {
 
   const onLaunchLast = async () => {
     try {
-      // Frontend-only launch path — do NOT call launch_last_game RPC
-      // (that is what was throwing "Python exception" on Deck).
       const next = await getStatus();
       setState(next);
 
@@ -187,31 +213,25 @@ function Content() {
         ? exe.slice(0, exe.lastIndexOf("/"))
         : "/home/deck/Games/Silksong";
 
-      const result = await launchSteamGame({
+      const saved =
+        next.last_steam_app_id &&
+        String(next.last_steam_app_id) !== "0" &&
+        String(next.last_steam_app_id) !== String(next.last_shortcut_appid || "")
+          ? String(next.last_steam_app_id)
+          : String(next.last_steam_app_id || "0");
+
+      const result = await launchWithBackendFallback({
         game_name: next.last_game || "Silksong",
         exe,
         start_dir: startDir,
         launch_options: "",
         compat_tool: "proton_experimental",
-        // Force live AddShortcut — do not pass VDF CRC32 as steam_app_id.
-        steam_app_id: "0",
+        steam_app_id: saved,
         shortcut_appid: next.last_shortcut_appid || "0",
         should_launch: true,
         already_installed: true,
-        needs_add_shortcut: true,
+        needs_add_shortcut: false,
       });
-
-      if (result.ok && result.appId) {
-        try {
-          await reportSteamAppId(
-            next.last_game || "Silksong",
-            exe,
-            result.appId
-          );
-        } catch (err) {
-          console.warn("report_steam_appid failed", err);
-        }
-      }
 
       if (!next.plugin_build) {
         toaster.toast({
@@ -582,25 +602,14 @@ export default definePlugin(() => {
             }`,
           });
 
-          // Add + launch in one shot so we never launch with a VDF-only id.
+          // Add + launch: frontend URI then backend steam:// (Game Mode reliable).
           if (payload.should_launch) {
-            const launch = await launchSteamGame({
+            const launch = await launchWithBackendFallback({
               ...payload,
               steam_app_id: result.appId ? String(result.appId) : "0",
               needs_add_shortcut: false,
               compat_tool: payload.compat_tool || "proton_experimental",
             });
-            if (launch.ok && launch.appId) {
-              try {
-                await reportSteamAppId(
-                  payload.game_name,
-                  payload.exe,
-                  launch.appId
-                );
-              } catch (err) {
-                console.warn("report_steam_appid failed", err);
-              }
-            }
             toaster.toast({
               title: launch.ok ? "Launching" : "Launch failed",
               body: launch.ok
@@ -632,28 +641,15 @@ export default definePlugin(() => {
     "pml_launch_game",
     (payload) => {
       void (async () => {
-        const result = await launchSteamGame(payload);
-        if (result.ok && result.appId) {
-          try {
-            await reportSteamAppId(payload.game_name, payload.exe, result.appId);
-          } catch (err) {
-            console.warn("report_steam_appid failed", err);
-          }
-          toaster.toast({
-            title: "Launching with Proton",
-            body: `${payload.game_name} (AppID ${result.appId})`,
-          });
-        } else if (result.ok) {
-          toaster.toast({
-            title: "Launching",
-            body: payload.game_name,
-          });
-        } else {
-          toaster.toast({
-            title: "Launch failed",
-            body: result.error || "Could not launch game",
-          });
-        }
+        const result = await launchWithBackendFallback(payload);
+        toaster.toast({
+          title: result.ok ? "Launching" : "Launch failed",
+          body: result.ok
+            ? `${payload.game_name}${
+                result.appId ? ` (AppID ${result.appId}` : ""
+              }${result.method ? `, ${result.method})` : result.appId ? ")" : ""}`
+            : result.error || "Could not launch game",
+        });
       })();
     }
   );

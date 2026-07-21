@@ -404,15 +404,19 @@ function watchLaunchErrors(expectedAppId, onError) {
     };
 }
 /**
- * Launch only — no reconfigure.
- * RunGame wants the 32-bit AppID. Optionally fall back to ExecuteSteamURL
- * with the Non-Steam 64-bit id. Never use location.href (freezes Game Mode).
+ * Launch Non-Steam titles via steam://rungameid/<64-bit>.
+ * RunGame often returns without starting Non-Steam apps (false success),
+ * so it is not used as the primary path.
+ * Never use location.href — that freezes Game Mode.
  */
 async function launchConfiguredApp(appId) {
-    const apps = window.SteamClient?.Apps;
     const id = toUnsignedAppId(appId);
     if (!id) {
         return { ok: false, method: "none", error: "Missing AppID" };
+    }
+    const launch64 = toNonSteamLaunchId64(id);
+    if (!launch64) {
+        return { ok: false, method: "none", error: `Could not build launch id for ${id}` };
     }
     let launchError = "";
     const stopWatch = watchLaunchErrors(id, (msg) => {
@@ -420,45 +424,47 @@ async function launchConfiguredApp(appId) {
         console.warn("PML", msg);
     });
     try {
-        // Leave Decky QAM so Game Mode can focus the launch transition.
-        navigateToApp(id);
-        await sleep(350);
-        if (apps && typeof apps.RunGame === "function") {
-            try {
-                // Empty launchOptions — do not prepend stored Proton/%command% options.
-                // Library-details source matches pressing Play on the game page.
-                apps.RunGame(id, "", -1, 100);
-                console.log("PML RunGame", id, "-1,100");
-                await sleep(1200);
-                if (!launchError) {
-                    return { ok: true, method: "RunGame" };
-                }
-            }
-            catch (err) {
-                console.warn("RunGame failed", err);
-            }
-        }
-        // Safe URI fallback (ExecuteSteamURL only — never location.href).
-        const launch64 = toNonSteamLaunchId64(id);
-        if (launch64 && window.SteamClient?.URL?.ExecuteSteamURL) {
+        closePluginMenus();
+        await sleep(200);
+        // Primary: ExecuteSteamURL with Non-Steam 64-bit id (Valve-documented form).
+        if (window.SteamClient?.URL?.ExecuteSteamURL) {
             try {
                 const url = `steam://rungameid/${launch64}`;
                 window.SteamClient.URL.ExecuteSteamURL(url);
                 console.log("PML ExecuteSteamURL", url);
-                await sleep(1200);
+                await sleep(800);
                 if (!launchError) {
-                    return { ok: true, method: "ExecuteSteamURL" };
+                    return { ok: true, method: "ExecuteSteamURL", launch64 };
                 }
             }
             catch (err) {
                 console.warn("ExecuteSteamURL failed", err);
             }
         }
+        // Secondary: RunGame with 32-bit id (library Play equivalent).
+        const apps = window.SteamClient?.Apps;
+        if (apps && typeof apps.RunGame === "function") {
+            try {
+                navigateToApp(id);
+                await sleep(300);
+                apps.RunGame(id, "", -1, 100);
+                console.log("PML RunGame secondary", id);
+                await sleep(800);
+                if (!launchError) {
+                    return { ok: true, method: "RunGame", launch64 };
+                }
+            }
+            catch (err) {
+                console.warn("RunGame failed", err);
+            }
+        }
+        // Still return launch64 so caller can ask the Python backend to steam:// launch.
         return {
             ok: false,
-            method: "failed",
+            method: "needs_backend",
+            launch64,
             error: launchError ||
-                `Launch did not start for AppID ${id}. Open Non-Steam → Silksong → Play.`,
+                `Frontend launch did not confirm for AppID ${id}; trying backend steam://`,
         };
     }
     finally {
@@ -515,31 +521,26 @@ async function launchSteamGame(req) {
                 error: "Missing exe path — transfer may not have finished",
             };
         }
+        const saved = asIdString(req.steam_app_id);
+        const vdfId = asIdString(req.shortcut_appid);
         let appId = (await findExistingShortcutAppId(req.game_name, req.exe)) ||
-            (asIdString(req.steam_app_id) &&
-                asIdString(req.steam_app_id) !== asIdString(req.shortcut_appid)
-                ? toUnsignedAppId(String(req.steam_app_id))
-                : "");
-        // Only create/configure if the shortcut is missing from the live library.
+            (saved && saved !== vdfId ? toUnsignedAppId(saved) : "");
+        let compatTool = "";
         if (!appId) {
             const ensured = await ensureConfiguredShortcut(req);
             appId = ensured.appId;
-            const result = await launchConfiguredApp(appId);
-            return {
-                ok: result.ok,
-                appId: Number(appId),
-                compatTool: ensured.compatTool,
-                method: result.method,
-                error: result.error,
-            };
+            compatTool = ensured.compatTool;
         }
-        console.log("PML launch without reconfigure", req.game_name, "appId=", appId, "exe=", req.exe);
+        console.log("PML launch", req.game_name, "appId=", appId, "exe=", req.exe);
         const result = await launchConfiguredApp(appId);
         return {
-            ok: result.ok,
+            // needs_backend still provides launch64 — treat as soft-ok for caller fallback
+            ok: result.ok || result.method === "needs_backend",
             appId: Number(appId),
+            compatTool,
             method: result.method,
-            error: result.error,
+            launch64: result.launch64,
+            error: result.ok ? undefined : result.error,
         };
     }
     catch (err) {
@@ -574,6 +575,33 @@ const rescanMedia = callable("rescan_media");
 const startTransfer = callable("start_transfer");
 const resetBusy = callable("reset_busy");
 const reportSteamAppId = callable("report_steam_appid");
+const backendLaunch = callable("backend_launch");
+async function launchWithBackendFallback(req) {
+    const result = await launchSteamGame(req);
+    if (result.appId) {
+        try {
+            await reportSteamAppId(req.game_name, req.exe, result.appId);
+        }
+        catch (err) {
+            console.warn("report_steam_appid failed", err);
+        }
+        // Backend steam:// as deck user — most reliable for Non-Steam in Game Mode.
+        try {
+            await backendLaunch(String(result.appId));
+            return {
+                ...result,
+                ok: true,
+                method: result.method
+                    ? `${result.method}+backend`
+                    : "backend",
+            };
+        }
+        catch (err) {
+            console.warn("backend_launch failed", err);
+        }
+    }
+    return result;
+}
 function Content() {
     const [state, setState] = SP_REACT.useState(EMPTY_STATUS);
     SP_REACT.useEffect(() => {
@@ -705,35 +733,29 @@ function Content() {
     };
     const onLaunchLast = async () => {
         try {
-            // Frontend-only launch path — do NOT call launch_last_game RPC
-            // (that is what was throwing "Python exception" on Deck).
             const next = await getStatus();
             setState(next);
             const exe = next.last_exe || "/home/deck/Games/Silksong/Silksong.exe";
             const startDir = exe.includes("/")
                 ? exe.slice(0, exe.lastIndexOf("/"))
                 : "/home/deck/Games/Silksong";
-            const result = await launchSteamGame({
+            const saved = next.last_steam_app_id &&
+                String(next.last_steam_app_id) !== "0" &&
+                String(next.last_steam_app_id) !== String(next.last_shortcut_appid || "")
+                ? String(next.last_steam_app_id)
+                : String(next.last_steam_app_id || "0");
+            const result = await launchWithBackendFallback({
                 game_name: next.last_game || "Silksong",
                 exe,
                 start_dir: startDir,
                 launch_options: "",
                 compat_tool: "proton_experimental",
-                // Force live AddShortcut — do not pass VDF CRC32 as steam_app_id.
-                steam_app_id: "0",
+                steam_app_id: saved,
                 shortcut_appid: next.last_shortcut_appid || "0",
                 should_launch: true,
                 already_installed: true,
-                needs_add_shortcut: true,
+                needs_add_shortcut: false,
             });
-            if (result.ok && result.appId) {
-                try {
-                    await reportSteamAppId(next.last_game || "Silksong", exe, result.appId);
-                }
-                catch (err) {
-                    console.warn("report_steam_appid failed", err);
-                }
-            }
             if (!next.plugin_build) {
                 toaster.toast({
                     title: "Backend not updated",
@@ -914,22 +936,14 @@ var index = definePlugin(() => {
                     title: "Added to Non-Steam",
                     body: `${payload.game_name}${result.appId ? ` (AppID ${result.appId})` : ""}`,
                 });
-                // Add + launch in one shot so we never launch with a VDF-only id.
+                // Add + launch: frontend URI then backend steam:// (Game Mode reliable).
                 if (payload.should_launch) {
-                    const launch = await launchSteamGame({
+                    const launch = await launchWithBackendFallback({
                         ...payload,
                         steam_app_id: result.appId ? String(result.appId) : "0",
                         needs_add_shortcut: false,
                         compat_tool: payload.compat_tool || "proton_experimental",
                     });
-                    if (launch.ok && launch.appId) {
-                        try {
-                            await reportSteamAppId(payload.game_name, payload.exe, launch.appId);
-                        }
-                        catch (err) {
-                            console.warn("report_steam_appid failed", err);
-                        }
-                    }
                     toaster.toast({
                         title: launch.ok ? "Launching" : "Launch failed",
                         body: launch.ok
@@ -953,31 +967,13 @@ var index = definePlugin(() => {
     });
     const onLaunchGame = addEventListener("pml_launch_game", (payload) => {
         void (async () => {
-            const result = await launchSteamGame(payload);
-            if (result.ok && result.appId) {
-                try {
-                    await reportSteamAppId(payload.game_name, payload.exe, result.appId);
-                }
-                catch (err) {
-                    console.warn("report_steam_appid failed", err);
-                }
-                toaster.toast({
-                    title: "Launching with Proton",
-                    body: `${payload.game_name} (AppID ${result.appId})`,
-                });
-            }
-            else if (result.ok) {
-                toaster.toast({
-                    title: "Launching",
-                    body: payload.game_name,
-                });
-            }
-            else {
-                toaster.toast({
-                    title: "Launch failed",
-                    body: result.error || "Could not launch game",
-                });
-            }
+            const result = await launchWithBackendFallback(payload);
+            toaster.toast({
+                title: result.ok ? "Launching" : "Launch failed",
+                body: result.ok
+                    ? `${payload.game_name}${result.appId ? ` (AppID ${result.appId}` : ""}${result.method ? `, ${result.method})` : result.appId ? ")" : ""}`
+                    : result.error || "Could not launch game",
+            });
         })();
     });
     const onLaunched = addEventListener("pml_launched", (gameName, launchId) => {

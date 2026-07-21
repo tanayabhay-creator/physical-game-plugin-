@@ -180,7 +180,7 @@ class Plugin:
                 unsigned = value & 0xFFFFFFFF
             launch64 = (unsigned << 32) | 0x02000000
             await self._log(
-                f"[launch8] backend_launch unsigned={unsigned} launch64={launch64}"
+                f"[launch9] backend_launch unsigned={unsigned} launch64={launch64}"
             )
             await launch_steam_app(launch64, shortcut_appid=unsigned)
             await self._set_status("Launch requested (backend)", progress=100.0)
@@ -192,32 +192,19 @@ class Plugin:
             return await self.get_status()
 
     async def launch_last_game(self) -> Dict[str, Any]:
-        """Compatibility stub — frontend launches directly; this only returns IDs."""
+        """Launch using the saved SteamClient AppID via steam://."""
         try:
-            await self._log("launch_last_game RPC ok (frontend performs launch)")
-            return await self.get_status()
+            self._store.load()
+            app_id = str(self._store.settings.last_steam_app_id or "0")
+            if app_id in {"", "0"}:
+                await self._log("launch_last_game: no saved Steam AppID yet")
+                return await self.get_status()
+            await self._log(f"launch_last_game via backend_launch app_id={app_id}")
+            return await self.backend_launch(app_id)
         except Exception as exc:  # noqa: BLE001
-            return {
-                "status": "Error",
-                "progress": 0,
-                "progress_message": "",
-                "bytes_copied": 0,
-                "bytes_total": 0,
-                "copying": False,
-                "auto_launch": True,
-                "last_game": "",
-                "last_mount": "",
-                "last_error": f"{type(exc).__name__}: {exc}",
-                "last_exe": "",
-                "last_steam_app_id": "0",
-                "last_vdf_launch_id": "0",
-                "last_shortcut_appid": "0",
-                "plugin_build": "2026-07-21-launch8",
-                "log_lines": [],
-                "busy": False,
-                "detected_mounts": [],
-                "has_detected_media": False,
-            }
+            logger.exception("launch_last_game failed")
+            self._store.update(last_error=f"launch_last_game: {exc}")
+            return await self.get_status()
 
     async def clear_log(self) -> Dict[str, Any]:
         self._store.update(log_lines=[], last_error="")
@@ -589,7 +576,7 @@ class Plugin:
                     if saved_app_id not in {"", "0"}
                     else "0"
                 ),
-                plugin_build="2026-07-21-launch8",
+                plugin_build="2026-07-21-launch9",
             )
 
             steam_payload = {
@@ -615,21 +602,50 @@ class Plugin:
             await self._emit_status()
             await decky.emit("pml_add_to_steam", steam_payload)
             await self._log(
-                f"[launch8] Live AddShortcut requested for '{info.game_name}' "
+                f"[launch9] Live AddShortcut requested for '{info.game_name}' "
                 f"(vdf_appid={shortcut_appid_s}, saved_steam_app_id={saved_app_id}, "
                 f"should_launch={should_launch})"
             )
 
-            # Frontend handles AddShortcut + optional launch in one shot.
-            # Give it time to call report_steam_appid before we finish.
-            await asyncio.sleep(2.5)
-            self._store.load()
-            refreshed = str(self._store.settings.last_steam_app_id or "0")
+            # Wait for frontend AddShortcut → report_steam_appid.
+            refreshed = "0"
+            for _ in range(12):
+                await asyncio.sleep(0.5)
+                self._store.load()
+                refreshed = str(self._store.settings.last_steam_app_id or "0")
+                if refreshed not in {"", "0"} and refreshed != shortcut_appid_s:
+                    break
+                if refreshed not in {"", "0"}:
+                    # Accept any non-zero id after a few waits.
+                    if _ >= 5:
+                        break
 
             if should_launch:
+                await self._set_status("Launching Game...", progress=100.0)
+                await self._emit_status()
+                launch_id = refreshed if refreshed not in {"", "0"} else "0"
+                if launch_id not in {"", "0"}:
+                    steam_payload["steam_app_id"] = launch_id
+                    steam_payload["needs_add_shortcut"] = False
+                    await decky.emit("pml_launch_game", steam_payload)
+                    await self._log(
+                        f"[launch9] Frontend launch event for steam_app_id={launch_id}"
+                    )
+                    try:
+                        await self.backend_launch(launch_id)
+                        await self._log(
+                            f"[launch9] Backend steam:// launch issued for {launch_id}"
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        await self._log(f"[launch9] backend_launch error: {exc}")
+                else:
+                    await self._log(
+                        "[launch9] No Steam AppID reported yet; "
+                        "frontend should_launch path must create+launch"
+                    )
                 await self._set_status("Launch requested", progress=100.0)
                 await notify("Physical Media Launcher", f"Launching {info.game_name}")
-                await decky.emit("pml_launched", info.game_name, refreshed)
+                await decky.emit("pml_launched", info.game_name, launch_id)
             else:
                 await self._set_status("Added to Steam", progress=100.0)
                 await notify(
