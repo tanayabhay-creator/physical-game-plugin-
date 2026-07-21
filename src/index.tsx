@@ -23,7 +23,7 @@ import {
   PluginStatus,
   ProgressEvent,
 } from "./types";
-import { addGameToSteam, SteamShortcutRequest } from "./steam";
+import { addGameToSteam, launchSteamGame, SteamShortcutRequest } from "./steam";
 
 const getStatus = callable<[], PluginStatus>("get_status");
 const setAutoLaunch = callable<[enabled: boolean], PluginStatus>("set_auto_launch");
@@ -352,7 +352,7 @@ function Content() {
         <PanelSectionRow>
           <ToggleField
             label="Enable Auto-Launch on Insertion"
-            description="When enabled, detected games are launched in Steam after copy/shortcut setup."
+            description="When ON, reinserting the SD card launches the game automatically (plugin toggle overrides game_info.json AutoLaunch)."
             checked={state.auto_launch}
             onChange={(checked) => {
               void onToggleAutoLaunch(checked);
@@ -399,18 +399,40 @@ export default definePlugin(() => {
       void (async () => {
         const result = await addGameToSteam(payload);
         if (result.ok) {
-          toaster.toast({
-            title: "Added to Steam",
-            body: `${payload.game_name} is now in your library${
-              result.appId ? ` (AppID ${result.appId})` : ""
-            }`,
-          });
+          if (!payload.already_installed) {
+            toaster.toast({
+              title: "Added to Steam",
+              body: `${payload.game_name} is now in your library${
+                result.appId ? ` (AppID ${result.appId})` : ""
+              }`,
+            });
+          }
         } else {
           toaster.toast({
             title: "Steam shortcut",
             body:
               result.error ||
               "SteamClient add failed — shortcuts.vdf fallback was still written.",
+          });
+        }
+      })();
+    }
+  );
+
+  const onLaunchGame = addEventListener<[SteamShortcutRequest]>(
+    "pml_launch_game",
+    (payload) => {
+      void (async () => {
+        const result = await launchSteamGame(payload);
+        if (result.ok) {
+          toaster.toast({
+            title: "Launching",
+            body: payload.game_name,
+          });
+        } else {
+          toaster.toast({
+            title: "Launch failed",
+            body: result.error || "Could not launch game",
           });
         }
       })();
@@ -441,6 +463,7 @@ export default definePlugin(() => {
     icon: <FaSdCard />,
     onDismount() {
       removeEventListener("pml_add_to_steam", onAddToSteam);
+      removeEventListener("pml_launch_game", onLaunchGame);
       removeEventListener("pml_launched", onLaunched);
       removeEventListener("pml_error", onError);
     },

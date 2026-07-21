@@ -13,6 +13,7 @@ from .steam_paths import list_removable_mounts
 logger = logging.getLogger("physical-media-launcher.watcher")
 
 MountCallback = Callable[[Path], Awaitable[None]]
+UnmountCallback = Callable[[str], Awaitable[None]]
 
 
 class MediaWatcher:
@@ -22,9 +23,11 @@ class MediaWatcher:
         self,
         on_mount: MountCallback,
         *,
+        on_unmount: Optional[UnmountCallback] = None,
         poll_interval_sec: float = 2.0,
     ) -> None:
         self._on_mount = on_mount
+        self._on_unmount = on_unmount
         self._poll_interval = poll_interval_sec
         self._known: Set[str] = set()
         self._task: Optional[asyncio.Task] = None
@@ -38,12 +41,12 @@ class MediaWatcher:
         if self._running:
             return
         self._running = True
+        # Seed known mounts only — do not auto-process at plugin load.
+        # Insertion / reinsertion / manual Start Transfer should drive work.
         for mount in self._scan_mounts():
             self._known.add(str(mount))
-            if find_game_info(mount) is not None:
-                await self._safe_callback(mount)
         self._task = asyncio.create_task(self._loop(), name="pml-media-watcher")
-        logger.info("Media watcher started")
+        logger.info("Media watcher started (known mounts: %s)", sorted(self._known))
 
     async def stop(self) -> None:
         self._running = False
@@ -67,7 +70,6 @@ class MediaWatcher:
             info = find_game_info(mount)
             if info is not None:
                 game_mounts.append(key)
-                await self._safe_callback(mount)
         return {
             "mounts": game_mounts,
             "all_mounts": all_mounts,
@@ -81,8 +83,14 @@ class MediaWatcher:
                 current_keys = set(current)
                 added = current_keys - self._known
                 removed = self._known - current_keys
-                for key in removed:
+                for key in sorted(removed):
                     self._known.discard(key)
+                    logger.info("Media removed: %s", key)
+                    if self._on_unmount is not None:
+                        try:
+                            await self._on_unmount(key)
+                        except Exception:
+                            logger.exception("Unmount handler failed for %s", key)
                 for key in sorted(added):
                     self._known.add(key)
                     mount = current[key]

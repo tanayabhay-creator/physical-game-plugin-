@@ -116,9 +116,28 @@ function formatBytes(bytes) {
     return `${value.toFixed(digits)} ${units[idx]}`;
 }
 
-/** Steam client helpers for adding Non-Steam shortcuts in Game Mode. */
+/** Steam client helpers for adding/launching Non-Steam shortcuts in Game Mode. */
 function getSteamClient() {
     return window.SteamClient;
+}
+function launchViaUri(launchId) {
+    const url = `steam://rungameid/${launchId}`;
+    const sc = getSteamClient();
+    try {
+        if (sc?.URL?.ExecuteSteamURL) {
+            sc.URL.ExecuteSteamURL(url);
+            return;
+        }
+    }
+    catch (err) {
+        console.warn("ExecuteSteamURL failed", err);
+    }
+    try {
+        window.open(url, "_blank");
+    }
+    catch (err) {
+        console.warn("window.open steam URL failed", err);
+    }
 }
 async function addGameToSteam(req) {
     try {
@@ -128,6 +147,10 @@ async function addGameToSteam(req) {
                 ok: false,
                 error: "SteamClient.Apps.AddShortcut unavailable (VDF fallback only)",
             };
+        }
+        // Avoid creating duplicate shortcuts on every card reinsert.
+        if (req.already_installed) {
+            return { ok: true };
         }
         const appId = await sc.Apps.AddShortcut(req.game_name, req.exe, req.start_dir, req.launch_options || "");
         const compat = (req.compat_tool || "").trim() ||
@@ -140,21 +163,29 @@ async function addGameToSteam(req) {
                 console.warn("SpecifyCompatTool failed", err);
             }
         }
-        if (req.should_launch) {
-            try {
-                if (sc.Apps.RunGame) {
-                    // launchSource enum value; 0 is commonly used by community plugins.
-                    sc.Apps.RunGame(String(appId), req.launch_options || "", 0, 0);
-                }
-                else if (req.vdf_launch_id) {
-                    window.open(`steam://rungameid/${req.vdf_launch_id}`, "_blank");
-                }
-            }
-            catch (err) {
-                console.warn("Auto-launch after AddShortcut failed", err);
-            }
-        }
         return { ok: true, appId };
+    }
+    catch (err) {
+        return { ok: false, error: String(err) };
+    }
+}
+async function launchSteamGame(req) {
+    try {
+        const sc = getSteamClient();
+        // Prefer steam://rungameid from shortcuts.vdf — works for existing Non-Steam games.
+        if (req.vdf_launch_id) {
+            launchViaUri(req.vdf_launch_id);
+            // Also try RunGame if we just created a shortcut app id in this session.
+            return { ok: true };
+        }
+        if (sc?.Apps?.RunGame) {
+            // Last resort without a launch id — cannot know app id reliably here.
+            return {
+                ok: false,
+                error: "No vdf_launch_id available for launch",
+            };
+        }
+        return { ok: false, error: "No Steam launch method available" };
     }
     catch (err) {
         return { ok: false, error: String(err) };
@@ -344,7 +375,7 @@ function Content() {
                                         overflow: "hidden",
                                         textOverflow: "ellipsis",
                                         whiteSpace: "nowrap",
-                                    }, children: state.progress_message }) }) })) : null] })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Transfer", description: "Press Start Transfer after a game card is detected.", children: "Idle" }) })) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Transfer", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(false), children: transferLocked ? "Transfer in progress…" : "Start Transfer (SD → SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(true), children: "Force Re-Copy (overwrite SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onRescan(), children: "Rescan inserted media" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onResetBusy(), children: "Reset stuck transfer state" }) })] }), SP_JSX.jsx(DFL.PanelSection, { title: "Auto-Launch", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Enable Auto-Launch on Insertion", description: "When enabled, detected games are launched in Steam after copy/shortcut setup.", checked: state.auto_launch, onChange: (checked) => {
+                                    }, children: state.progress_message }) }) })) : null] })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Transfer", description: "Press Start Transfer after a game card is detected.", children: "Idle" }) })) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Transfer", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(false), children: transferLocked ? "Transfer in progress…" : "Start Transfer (SD → SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(true), children: "Force Re-Copy (overwrite SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onRescan(), children: "Rescan inserted media" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onResetBusy(), children: "Reset stuck transfer state" }) })] }), SP_JSX.jsx(DFL.PanelSection, { title: "Auto-Launch", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Enable Auto-Launch on Insertion", description: "When ON, reinserting the SD card launches the game automatically (plugin toggle overrides game_info.json AutoLaunch).", checked: state.auto_launch, onChange: (checked) => {
                             void onToggleAutoLaunch(checked);
                         } }) }) }), SP_JSX.jsx(DFL.PanelSection, { title: "Actions", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onClearLog(), children: "Clear log" }) }) }), SP_JSX.jsx(DFL.PanelSection, { title: "Log", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("pre", { style: {
                             width: "100%",
@@ -363,16 +394,35 @@ var index = definePlugin(() => {
         void (async () => {
             const result = await addGameToSteam(payload);
             if (result.ok) {
-                toaster.toast({
-                    title: "Added to Steam",
-                    body: `${payload.game_name} is now in your library${result.appId ? ` (AppID ${result.appId})` : ""}`,
-                });
+                if (!payload.already_installed) {
+                    toaster.toast({
+                        title: "Added to Steam",
+                        body: `${payload.game_name} is now in your library${result.appId ? ` (AppID ${result.appId})` : ""}`,
+                    });
+                }
             }
             else {
                 toaster.toast({
                     title: "Steam shortcut",
                     body: result.error ||
                         "SteamClient add failed — shortcuts.vdf fallback was still written.",
+                });
+            }
+        })();
+    });
+    const onLaunchGame = addEventListener("pml_launch_game", (payload) => {
+        void (async () => {
+            const result = await launchSteamGame(payload);
+            if (result.ok) {
+                toaster.toast({
+                    title: "Launching",
+                    body: payload.game_name,
+                });
+            }
+            else {
+                toaster.toast({
+                    title: "Launch failed",
+                    body: result.error || "Could not launch game",
                 });
             }
         })();
@@ -396,6 +446,7 @@ var index = definePlugin(() => {
         icon: SP_JSX.jsx(FaSdCard, {}),
         onDismount() {
             removeEventListener("pml_add_to_steam", onAddToSteam);
+            removeEventListener("pml_launch_game", onLaunchGame);
             removeEventListener("pml_launched", onLaunched);
             removeEventListener("pml_error", onError);
         },

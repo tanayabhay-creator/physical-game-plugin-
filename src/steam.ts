@@ -1,4 +1,4 @@
-/** Steam client helpers for adding Non-Steam shortcuts in Game Mode. */
+/** Steam client helpers for adding/launching Non-Steam shortcuts in Game Mode. */
 
 export type SteamShortcutRequest = {
   game_name: string;
@@ -8,6 +8,7 @@ export type SteamShortcutRequest = {
   compat_tool?: string;
   should_launch?: boolean;
   vdf_launch_id?: number;
+  already_installed?: boolean;
 };
 
 type SteamClientAPI = {
@@ -26,10 +27,31 @@ type SteamClientAPI = {
       launchSource: number
     ) => void;
   };
+  URL?: {
+    ExecuteSteamURL?: (url: string) => void;
+  };
 };
 
 function getSteamClient(): SteamClientAPI | undefined {
   return (window as Window & { SteamClient?: SteamClientAPI }).SteamClient;
+}
+
+function launchViaUri(launchId: number): void {
+  const url = `steam://rungameid/${launchId}`;
+  const sc = getSteamClient();
+  try {
+    if (sc?.URL?.ExecuteSteamURL) {
+      sc.URL.ExecuteSteamURL(url);
+      return;
+    }
+  } catch (err) {
+    console.warn("ExecuteSteamURL failed", err);
+  }
+  try {
+    window.open(url, "_blank");
+  } catch (err) {
+    console.warn("window.open steam URL failed", err);
+  }
 }
 
 export async function addGameToSteam(
@@ -42,6 +64,11 @@ export async function addGameToSteam(
         ok: false,
         error: "SteamClient.Apps.AddShortcut unavailable (VDF fallback only)",
       };
+    }
+
+    // Avoid creating duplicate shortcuts on every card reinsert.
+    if (req.already_installed) {
+      return { ok: true };
     }
 
     const appId = await sc.Apps.AddShortcut(
@@ -62,20 +89,34 @@ export async function addGameToSteam(
       }
     }
 
-    if (req.should_launch) {
-      try {
-        if (sc.Apps.RunGame) {
-          // launchSource enum value; 0 is commonly used by community plugins.
-          sc.Apps.RunGame(String(appId), req.launch_options || "", 0, 0);
-        } else if (req.vdf_launch_id) {
-          window.open(`steam://rungameid/${req.vdf_launch_id}`, "_blank");
-        }
-      } catch (err) {
-        console.warn("Auto-launch after AddShortcut failed", err);
-      }
+    return { ok: true, appId };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+export async function launchSteamGame(
+  req: SteamShortcutRequest
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const sc = getSteamClient();
+
+    // Prefer steam://rungameid from shortcuts.vdf — works for existing Non-Steam games.
+    if (req.vdf_launch_id) {
+      launchViaUri(req.vdf_launch_id);
+      // Also try RunGame if we just created a shortcut app id in this session.
+      return { ok: true };
     }
 
-    return { ok: true, appId };
+    if (sc?.Apps?.RunGame) {
+      // Last resort without a launch id — cannot know app id reliably here.
+      return {
+        ok: false,
+        error: "No vdf_launch_id available for launch",
+      };
+    }
+
+    return { ok: false, error: "No Steam launch method available" };
   } catch (err) {
     return { ok: false, error: String(err) };
   }

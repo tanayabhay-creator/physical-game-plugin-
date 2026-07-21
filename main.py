@@ -55,6 +55,7 @@ class Plugin:
         self._copying = False
         self._watcher = MediaWatcher(
             self._on_mount,
+            on_unmount=self._on_unmount,
             poll_interval_sec=self._store.settings.poll_interval_sec,
         )
         await self._set_status("Ready", progress=0.0)
@@ -271,7 +272,29 @@ class Plugin:
     # ------------------------------------------------------------------
 
     async def _on_mount(self, mount: Path) -> None:
-        await self._handle_mount(mount, force=False, force_recopy=False)
+        # Reinsertion must be allowed to launch again.
+        await self._handle_mount(mount, force=True, force_recopy=False)
+
+    async def _on_unmount(self, mount_key: str) -> None:
+        # Forget this mount so the next insertion runs detect/launch again.
+        to_remove = {mount_key}
+        try:
+            resolved = str(Path(mount_key).resolve())
+            to_remove.add(resolved)
+        except Exception:
+            pass
+        before = len(self._handled_mounts)
+        self._handled_mounts -= to_remove
+        # Also drop any handled entries that share the same mount prefix.
+        self._handled_mounts = {
+            m for m in self._handled_mounts if m not in to_remove and not m.startswith(mount_key)
+        }
+        await self._log(
+            f"Card removed ({mount_key}); cleared handled state "
+            f"({before} -> {len(self._handled_mounts)})"
+        )
+        await self._set_status("Ready (waiting for card)", progress=0.0, persist=False)
+        await self._emit_status()
 
     async def _handle_mount(
         self,
@@ -392,9 +415,13 @@ class Plugin:
             await self._set_status("Adding game to Steam...", progress=100.0)
             await self._emit_status()
 
-            should_launch = self._store.settings.auto_launch
-            if info.auto_launch is not None:
-                should_launch = info.auto_launch
+            # Plugin UI toggle wins. Card AutoLaunch=false was blocking launches.
+            should_launch = bool(self._store.settings.auto_launch)
+            if info.auto_launch is not None and info.auto_launch != should_launch:
+                await self._log(
+                    f"Ignoring card AutoLaunch={info.auto_launch}; "
+                    f"plugin toggle is {should_launch}"
+                )
 
             # Persist into shortcuts.vdf as a durable fallback.
             shortcut = ensure_non_steam_shortcut(
@@ -408,7 +435,6 @@ class Plugin:
                 f"appid={shortcut.appid} launch_id={shortcut.steam_launch_id}"
             )
 
-            # Live Game Mode registration via frontend SteamClient.Apps.AddShortcut.
             steam_payload = {
                 "game_name": info.game_name,
                 "exe": str(info.destination_exe),
@@ -417,17 +443,21 @@ class Plugin:
                 "compat_tool": info.compat_tool or "",
                 "should_launch": bool(should_launch),
                 "vdf_launch_id": shortcut.steam_launch_id,
+                "already_installed": bool(already and not force_recopy),
             }
+
             await decky.emit("pml_add_to_steam", steam_payload)
             await self._log(
-                f"Requested Steam AddShortcut for '{info.game_name}' "
-                f"({info.destination_exe})"
+                f"Requested Steam registration for '{info.game_name}' "
+                f"(already_installed={steam_payload['already_installed']}, "
+                f"should_launch={should_launch})"
             )
 
             if should_launch:
-                await self._set_status("Game added — launching...", progress=100.0)
+                await self._set_status("Launching Game...", progress=100.0)
                 await self._emit_status()
-                await asyncio.sleep(1.5)
+                await decky.emit("pml_launch_game", steam_payload)
+                await asyncio.sleep(1.0)
                 try:
                     await launch_steam_app(shortcut.steam_launch_id)
                     await self._set_status("Game Launched", progress=100.0)
@@ -437,9 +467,9 @@ class Plugin:
                     )
                 except Exception as launch_exc:  # noqa: BLE001
                     await self._log(
-                        f"URI launch fallback failed (shortcut should still exist): {launch_exc}"
+                        f"URI launch fallback failed (frontend launch may still work): {launch_exc}"
                     )
-                    await self._set_status("Added to Steam", progress=100.0)
+                    await self._set_status("Launch requested", progress=100.0)
             else:
                 await self._set_status("Added to Steam", progress=100.0)
                 await notify(

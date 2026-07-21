@@ -4,5 +4,5 @@
   "ExePath": "game.sh",
   "LaunchOptions": "",
   "TargetSSDPath": "/home/deck/Games/PMLTestGame",
-  "AutoLaunch": false
+  "AutoLaunch": true
 }
