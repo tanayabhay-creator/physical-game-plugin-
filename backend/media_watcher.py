@@ -7,7 +7,8 @@ import logging
 from pathlib import Path
 from typing import Awaitable, Callable, Optional, Set
 
-from .steam_paths import media_mount_roots
+from .game_info import find_game_info
+from .steam_paths import list_removable_mounts
 
 logger = logging.getLogger("physical-media-launcher.watcher")
 
@@ -15,23 +16,16 @@ MountCallback = Callable[[Path], Awaitable[None]]
 
 
 class MediaWatcher:
-    """Lightweight mount watcher (poll-based for Deck reliability).
-
-    A true udev rule can also notify the plugin (see defaults/udev), but the
-    in-process poller works without installing system units and is enough to
-    detect SD/USB mounts under /run/media/<user>.
-    """
+    """Lightweight mount watcher (poll-based for Deck reliability)."""
 
     def __init__(
         self,
         on_mount: MountCallback,
         *,
         poll_interval_sec: float = 2.0,
-        game_info_name: str = "game_info.json",
     ) -> None:
         self._on_mount = on_mount
         self._poll_interval = poll_interval_sec
-        self._game_info_name = game_info_name
         self._known: Set[str] = set()
         self._task: Optional[asyncio.Task] = None
         self._running = False
@@ -44,11 +38,9 @@ class MediaWatcher:
         if self._running:
             return
         self._running = True
-        # Seed known mounts so already-inserted non-game cards are ignored,
-        # but still process game cards present at plugin load.
         for mount in self._scan_mounts():
             self._known.add(str(mount))
-            if (mount / self._game_info_name).is_file():
+            if find_game_info(mount) is not None:
                 await self._safe_callback(mount)
         self._task = asyncio.create_task(self._loop(), name="pml-media-watcher")
         logger.info("Media watcher started")
@@ -64,15 +56,23 @@ class MediaWatcher:
             self._task = None
         logger.info("Media watcher stopped")
 
-    async def scan_once(self) -> list[str]:
-        """Force a scan and return mounts that currently have game_info.json."""
-        found: list[str] = []
+    async def scan_once(self) -> dict:
+        """Force a scan and return mounts with/without game_info.json."""
+        all_mounts: list[str] = []
+        game_mounts: list[str] = []
         for mount in self._scan_mounts():
-            self._known.add(str(mount))
-            if (mount / self._game_info_name).is_file():
-                found.append(str(mount))
+            key = str(mount)
+            all_mounts.append(key)
+            self._known.add(key)
+            info = find_game_info(mount)
+            if info is not None:
+                game_mounts.append(key)
                 await self._safe_callback(mount)
-        return found
+        return {
+            "mounts": game_mounts,
+            "all_mounts": all_mounts,
+            "game_info_found": len(game_mounts) > 0,
+        }
 
     async def _loop(self) -> None:
         while self._running:
@@ -86,7 +86,7 @@ class MediaWatcher:
                 for key in sorted(added):
                     self._known.add(key)
                     mount = current[key]
-                    if (mount / self._game_info_name).is_file():
+                    if find_game_info(mount) is not None:
                         logger.info("Game media detected at %s", mount)
                         await self._safe_callback(mount)
                     else:
@@ -96,18 +96,7 @@ class MediaWatcher:
             await asyncio.sleep(self._poll_interval)
 
     def _scan_mounts(self) -> list[Path]:
-        mounts: list[Path] = []
-        for root in media_mount_roots():
-            if not root.is_dir():
-                continue
-            try:
-                children = list(root.iterdir())
-            except PermissionError:
-                continue
-            for child in children:
-                if child.is_dir() and not child.name.startswith("."):
-                    mounts.append(child)
-        return mounts
+        return list_removable_mounts()
 
     async def _safe_callback(self, mount: Path) -> None:
         try:

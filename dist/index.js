@@ -183,11 +183,24 @@ function Content() {
         try {
             const next = await rescanMedia();
             setState(next);
+            const gameMounts = next.mounts || [];
+            const allMounts = next.all_mounts || [];
+            let body;
+            if (gameMounts.length > 0) {
+                body = `Found game_info.json on ${gameMounts.length} volume(s)`;
+            }
+            else if (allMounts.length > 0) {
+                body =
+                    `SD/USB is mounted (${allMounts.length}), but game_info.json is missing from the card root. ` +
+                        `Add game_info.json next to your game folder.`;
+            }
+            else {
+                body =
+                    "No SD/USB mounts found under /run/media/deck. Insert the card and wait for SteamOS to mount it.";
+            }
             toaster.toast({
                 title: "Physical Media Launcher",
-                body: next.mounts?.length > 0
-                    ? `Found ${next.mounts.length} game card(s)`
-                    : "No game_info.json media found",
+                body,
             });
         }
         catch (err) {

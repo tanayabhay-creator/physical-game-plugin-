@@ -27,7 +27,10 @@ import {
 const getStatus = callable<[], PluginStatus>("get_status");
 const setAutoLaunch = callable<[enabled: boolean], PluginStatus>("set_auto_launch");
 const clearLog = callable<[], PluginStatus>("clear_log");
-const rescanMedia = callable<[], PluginStatus & { mounts: string[] }>("rescan_media");
+const rescanMedia = callable<
+  [],
+  PluginStatus & { mounts: string[]; all_mounts?: string[] }
+>("rescan_media");
 
 function Content() {
   const [state, setState] = useState<PluginStatus>(EMPTY_STATUS);
@@ -101,12 +104,22 @@ function Content() {
     try {
       const next = await rescanMedia();
       setState(next);
+      const gameMounts = next.mounts || [];
+      const allMounts = next.all_mounts || [];
+      let body: string;
+      if (gameMounts.length > 0) {
+        body = `Found game_info.json on ${gameMounts.length} volume(s)`;
+      } else if (allMounts.length > 0) {
+        body =
+          `SD/USB is mounted (${allMounts.length}), but game_info.json is missing from the card root. ` +
+          `Add game_info.json next to your game folder.`;
+      } else {
+        body =
+          "No SD/USB mounts found under /run/media/deck. Insert the card and wait for SteamOS to mount it.";
+      }
       toaster.toast({
         title: "Physical Media Launcher",
-        body:
-          next.mounts?.length > 0
-            ? `Found ${next.mounts.length} game card(s)`
-            : "No game_info.json media found",
+        body,
       });
     } catch (err) {
       toaster.toast({

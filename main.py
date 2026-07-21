@@ -99,9 +99,27 @@ class Plugin:
         return await self.get_status()
 
     async def rescan_media(self) -> Dict[str, Any]:
-        mounts = await self._watcher.scan_once()
-        await self._log(f"Manual rescan found {len(mounts)} game mount(s)")
-        return {"mounts": mounts, **(await self.get_status())}
+        result = await self._watcher.scan_once()
+        mounts = list(result.get("mounts") or [])
+        all_mounts = list(result.get("all_mounts") or [])
+        await self._log(
+            f"Manual rescan: {len(all_mounts)} mount(s), "
+            f"{len(mounts)} with game_info.json"
+        )
+        if all_mounts and not mounts:
+            await self._log(
+                "Mounted volumes found, but none have game_info.json on/near the root. "
+                f"Mounts: {', '.join(all_mounts)}"
+            )
+        elif not all_mounts:
+            await self._log(
+                "No removable mounts under /run/media/deck (is the SD card inserted and mounted?)"
+            )
+        return {
+            "mounts": mounts,
+            "all_mounts": all_mounts,
+            **(await self.get_status()),
+        }
 
     async def process_mount(self, mount_path: str) -> Dict[str, Any]:
         await self._handle_mount(Path(mount_path), force=True)

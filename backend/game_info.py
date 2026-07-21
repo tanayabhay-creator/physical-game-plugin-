@@ -9,6 +9,14 @@ from typing import Any, Dict, Optional
 
 
 GAME_INFO_FILENAME = "game_info.json"
+# Common mistakes we still accept on the card root.
+GAME_INFO_ALIASES = (
+    "game_info.json",
+    "Game_Info.json",
+    "GAME_INFO.JSON",
+    "game-info.json",
+    "gameinfo.json",
+)
 
 
 @dataclass
@@ -22,6 +30,7 @@ class GameInfo:
     compat_tool: str
     auto_launch: Optional[bool]
     source_root: Path
+    info_path: Path
 
     @property
     def source_game_dir(self) -> Path:
@@ -50,13 +59,9 @@ class GameInfo:
     def resolved_launch_options(self) -> str:
         """Build LaunchOptions, including optional Proton compat hints."""
         opts = (self.launch_options or "").strip()
-        # If a Windows executable is targeted and the author supplied a compat
-        # tool name, expose it as an env prefix commonly used with Proton.
         if self.compat_tool and "STEAM_COMPAT_TOOL" not in opts:
             prefix = f'STEAM_COMPAT_TOOL_PATH="{self.compat_tool}"'
             if opts:
-                if "%command%" in opts:
-                    return f"{prefix} {opts}"
                 return f"{prefix} {opts}"
             return opts
         return opts
@@ -67,9 +72,39 @@ class GameInfoError(ValueError):
 
 
 def find_game_info(mount_root: Path) -> Optional[Path]:
-    candidate = mount_root / GAME_INFO_FILENAME
-    if candidate.is_file():
-        return candidate
+    """Locate game metadata on a mounted volume.
+
+    Looks on the mount root first (required layout), then one level deep in
+    case the user put the JSON inside the game folder by mistake.
+    """
+    # Exact + alias match on the root (case-insensitive scan).
+    try:
+        root_files = {p.name.lower(): p for p in mount_root.iterdir() if p.is_file()}
+    except PermissionError:
+        root_files = {}
+
+    for alias in GAME_INFO_ALIASES:
+        hit = root_files.get(alias.lower())
+        if hit is not None:
+            return hit
+
+    # Fallback: search one directory deep for game_info.json.
+    try:
+        for child in mount_root.iterdir():
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            try:
+                nested = {
+                    p.name.lower(): p for p in child.iterdir() if p.is_file()
+                }
+            except PermissionError:
+                continue
+            for alias in GAME_INFO_ALIASES:
+                hit = nested.get(alias.lower())
+                if hit is not None:
+                    return hit
+    except PermissionError:
+        pass
     return None
 
 
@@ -79,7 +114,7 @@ def load_game_info(mount_root: Path) -> GameInfo:
         raise GameInfoError(f"{GAME_INFO_FILENAME} not found on {mount_root}")
 
     try:
-        raw: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        raw: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as exc:
         raise GameInfoError(f"Invalid JSON in {path}: {exc}") from exc
 
@@ -87,16 +122,28 @@ def load_game_info(mount_root: Path) -> GameInfo:
     exe_path = _require_str(raw, "ExePath").replace("\\", "/").lstrip("/")
     target = _require_str(raw, "TargetSSDPath")
 
+    # If JSON was found inside a subfolder, default GameFolder to that folder
+    # unless the user already set it.
+    game_folder = str(raw.get("GameFolder") or "").replace("\\", "/").strip("/")
+    info_parent = path.parent.resolve()
+    mount_resolved = mount_root.resolve()
+    if not game_folder and info_parent != mount_resolved:
+        try:
+            game_folder = str(info_parent.relative_to(mount_resolved)).replace("\\", "/")
+        except ValueError:
+            game_folder = ""
+
     return GameInfo(
         game_name=game_name,
         exe_path=exe_path,
         launch_options=str(raw.get("LaunchOptions") or ""),
         target_ssd_path=target,
-        game_folder=str(raw.get("GameFolder") or "").replace("\\", "/").strip("/"),
+        game_folder=game_folder,
         start_dir=str(raw.get("StartDir") or "").replace("\\", "/").strip("/"),
         compat_tool=str(raw.get("CompatTool") or raw.get("ProtonPath") or ""),
         auto_launch=raw.get("AutoLaunch") if isinstance(raw.get("AutoLaunch"), bool) else None,
         source_root=mount_root.resolve(),
+        info_path=path,
     )
 
 

@@ -86,6 +86,7 @@ def media_mount_roots() -> List[Path]:
         Path(f"/run/media/{user}"),
         Path("/run/media/deck"),
         Path("/media") / user,
+        Path("/media/deck"),
         Path("/mnt"),
     ]
     # Preserve order, drop duplicates
@@ -98,3 +99,25 @@ def media_mount_roots() -> List[Path]:
         seen.add(key)
         unique.append(root)
     return unique
+
+
+def list_removable_mounts() -> List[Path]:
+    """Return currently mounted removable volumes under known media roots."""
+    mounts: List[Path] = []
+    seen = set()
+    for root in media_mount_roots():
+        if not root.is_dir():
+            continue
+        try:
+            children = list(root.iterdir())
+        except PermissionError:
+            continue
+        for child in children:
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            key = str(child)
+            if key in seen:
+                continue
+            seen.add(key)
+            mounts.append(child)
+    return mounts

@@ -64,6 +64,25 @@ class GameInfoTests(unittest.TestCase):
             self.assertEqual(info.exe_path, "game.exe")
             self.assertTrue(str(info.source_game_dir).endswith("payload"))
 
+    def test_find_nested_and_case_insensitive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nested = root / "MyGame"
+            nested.mkdir()
+            (nested / "Game_Info.json").write_text(
+                json.dumps(
+                    {
+                        "GameName": "Nested",
+                        "ExePath": "run.exe",
+                        "TargetSSDPath": "/home/deck/Games/Nested",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            info = load_game_info(root)
+            self.assertEqual(info.game_name, "Nested")
+            self.assertEqual(info.game_folder, "MyGame")
+
 
 class ShortcutTests(unittest.TestCase):
     def test_appid_helpers(self) -> None:
