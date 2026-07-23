@@ -129,7 +129,7 @@ class Plugin:
             "last_steam_app_id": steam_app_id,
             "last_vdf_launch_id": vdf_launch_id,
             "last_shortcut_appid": shortcut_appid,
-            "plugin_build": "1.0.3",
+            "plugin_build": "1.0.4",
             "log_lines": [str(x) for x in list(s.log_lines[-50:])],
             "busy": bool(self._busy),
             "detected_mounts": [str(x) for x in detected],
@@ -584,10 +584,11 @@ class Plugin:
                 )
             if not source_exe.is_file():
                 layout = describe_mount_layout(source_dir)
+                folder_label = repr(info.game_folder) if info.game_folder else "card root"
                 raise FileNotFoundError(
                     f"Source executable not found on media: {source_exe}. "
                     f"ExePath={info.exe_path!r} must be relative to GameFolder "
-                    f"({info.game_folder!r or 'card root'}). "
+                    f"({folder_label}). "
                     f"That folder contains: {layout}."
                 )
 
@@ -710,7 +711,7 @@ class Plugin:
                     if saved_app_id not in {"", "0"}
                     else "0"
                 ),
-                plugin_build="1.0.3",
+                plugin_build="1.0.4",
             )
 
             steam_payload = {

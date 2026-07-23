@@ -7,7 +7,7 @@ USER_NAME="$(id -un)"
 HOME_DIR="${HOME:-/home/deck}"
 PLUGINS_DIR="${HOME_DIR}/homebrew/plugins"
 TARGET="${PLUGINS_DIR}/PhysicalMediaLauncher"
-BRANCH="${PML_BRANCH:-v1.0.3}"
+BRANCH="${PML_BRANCH:-v1.0.4}"
 REPO_URL="https://github.com/tanayabhay-creator/physical-game-plugin-.git"
 WORK="/tmp/pml-hard-${USER_NAME}-$$"
 
@@ -94,6 +94,12 @@ fi
 if [[ ! -f "${TARGET}/dist/index.js" ]]; then
   echo "WARNING: dist/index.js missing"
 fi
+# Catch broken backends before Decky shows "unknown — please update".
+if ! python3 -m py_compile "${TARGET}/main.py"; then
+  echo "ERROR: main.py has a Python syntax error (plugin would not load)."
+  exit 1
+fi
+python3 -m py_compile "${TARGET}/backend/"*.py
 echo "OK: plugin_build marker ${BUILD_MARKER}"
 echo "OK: $(grep -n 'plugin_build' "${TARGET}/main.py" | head -3)"
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.4
+
+- **Critical fix:** backend failed to load (`SyntaxError` in `main.py`) → UI showed **unknown — please update** and no buttons worked
+- Install script now compiles `main.py` before finishing so a broken backend cannot be installed silently
+
 ## 1.0.3
 
 - **Generate game_info.json on SD** from the plugin UI (scans the card for the game folder + `.exe`)
@@ -34,4 +39,4 @@ First stable release of **Physical Media Launcher** for Steam Deck (Decky Loader
 - Manual controls: Start Transfer, Force Re-Copy, Launch last game, Add/Fix shortcut, Open in Library
 
 ### Install
-See the [v1.0.3 release](https://github.com/tanayabhay-creator/physical-game-plugin-/releases/tag/v1.0.3) or README.
+See the [v1.0.4 release](https://github.com/tanayabhay-creator/physical-game-plugin-/releases/tag/v1.0.4) or README.

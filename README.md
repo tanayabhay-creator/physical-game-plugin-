@@ -1,6 +1,6 @@
 # Physical Media Launcher
 
-**Version 1.0.3** — Decky Loader plugin for Steam Deck that detects game SD cards / USB drives, copies the game folder to the internal SSD when needed, registers a Non-Steam Steam shortcut, and optionally launches it.
+**Version 1.0.4** — Decky Loader plugin for Steam Deck that detects game SD cards / USB drives, copies the game folder to the internal SSD when needed, registers a Non-Steam Steam shortcut, and optionally launches it.
 
 Use this with games you own and are allowed to copy (for example GOG / itch / DRM-free Windows builds). The plugin supports Proton-friendly launch options for Windows executables added as Non-Steam shortcuts.
 
@@ -89,14 +89,14 @@ See [`example/game_info.json`](example/game_info.json).
 
 ## Install / update on Steam Deck (Konsole)
 
-### Recommended (v1.0.3 hard reinstall)
+### Recommended (v1.0.4 hard reinstall)
 
 ```bash
 cd /tmp
 sudo chown -R deck:deck /home/deck/homebrew /home/deck/Downloads /home/deck/Games
 sudo rm -rf /tmp/pml-get /tmp/pml-hard-* /tmp/pml-work-deck-*
 mkdir -p /tmp/pml-get && cd /tmp/pml-get
-git clone --branch v1.0.3 --single-branch https://github.com/tanayabhay-creator/physical-game-plugin-.git repo
+git clone --branch v1.0.4 --single-branch https://github.com/tanayabhay-creator/physical-game-plugin-.git repo
 bash repo/hard-reinstall-on-deck.sh
 ```
 

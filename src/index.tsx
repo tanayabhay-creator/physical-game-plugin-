@@ -488,7 +488,7 @@ function Content() {
 
         <PanelSectionRow>
           <Field label="Plugin build">
-            {state.plugin_build || "unknown — please update"}
+            {state.plugin_build || "unknown — reinstall v1.0.4 + restart Decky"}
           </Field>
         </PanelSectionRow>
 
