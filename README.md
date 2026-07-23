@@ -69,7 +69,7 @@ Place this file on the **root** of the removable volume:
 | --- | --- | --- |
 | `GameName` | yes | Shortcut name shown in Steam |
 | `ExePath` | yes | Executable path relative to the game folder |
-| `TargetSSDPath` | yes | Absolute destination on internal storage |
+| `TargetSSDPath` | no* | Absolute destination on internal storage. Also accepts `TargetSDPath`. If omitted, defaults to `/home/deck/Games/<GameName>`. |
 | `LaunchOptions` | no | Steam launch options (`%command%` supported) |
 | `GameFolder` | no | Folder on the card containing the game (default: card root) |
 | `StartDir` | no | Working directory relative to `TargetSSDPath` |
