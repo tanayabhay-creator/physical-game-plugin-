@@ -118,7 +118,7 @@ class Plugin:
             "last_steam_app_id": steam_app_id,
             "last_vdf_launch_id": vdf_launch_id,
             "last_shortcut_appid": shortcut_appid,
-            "plugin_build": "1.0.0",
+            "plugin_build": "1.0.1",
             "log_lines": [str(x) for x in list(s.log_lines[-50:])],
             "busy": bool(self._busy),
             "detected_mounts": [str(x) for x in detected],
@@ -596,7 +596,7 @@ class Plugin:
                     if saved_app_id not in {"", "0"}
                     else "0"
                 ),
-                plugin_build="1.0.0",
+                plugin_build="1.0.1",
             )
 
             steam_payload = {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1
+
+- Accept `TargetSDPath` and other common aliases for the SSD destination field
+- If `TargetSSDPath` is missing, default to `/home/deck/Games/<GameName>`
+- Clearer `game_info.json` validation errors (lists keys found on the card)
+
 ## 1.0.0
 
 First stable release of **Physical Media Launcher** for Steam Deck (Decky Loader).
@@ -13,4 +19,4 @@ First stable release of **Physical Media Launcher** for Steam Deck (Decky Loader
 - Manual controls: Start Transfer, Force Re-Copy, Launch last game, Add/Fix shortcut, Open in Library
 
 ### Install
-See the [v1.0.0 release](https://github.com/tanayabhay-creator/physical-game-plugin-/releases/tag/v1.0.0) or README.
+See the [v1.0.1 release](https://github.com/tanayabhay-creator/physical-game-plugin-/releases/tag/v1.0.1) or README.

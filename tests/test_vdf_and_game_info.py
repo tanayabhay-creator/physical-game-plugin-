@@ -83,6 +83,34 @@ class GameInfoTests(unittest.TestCase):
             self.assertEqual(info.game_name, "Nested")
             self.assertEqual(info.game_folder, "MyGame")
 
+    def test_target_sd_path_alias_and_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "game_info.json").write_text(
+                json.dumps(
+                    {
+                        "GameName": "Silksong 2",
+                        "ExePath": "GameFiles/Silksong.exe",
+                        "TargetSDPath": "/home/deck/Games/Silksong2",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            info = load_game_info(root)
+            self.assertEqual(info.target_ssd_path, "/home/deck/Games/Silksong2")
+
+            (root / "game_info.json").write_text(
+                json.dumps(
+                    {
+                        "GameName": "My Cool Game!",
+                        "ExePath": "game.exe",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            info2 = load_game_info(root)
+            self.assertTrue(info2.target_ssd_path.endswith("/Games/My_Cool_Game"))
+
 
 class ShortcutTests(unittest.TestCase):
     def test_appid_helpers(self) -> None:

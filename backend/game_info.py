@@ -150,9 +150,28 @@ def load_game_info(mount_root: Path) -> GameInfo:
     exe_path = _require_str(
         normalized, "exepath", aliases=("exe", "executable")
     ).replace("\\", "/").lstrip("/")
-    target = _require_str(
-        normalized, "targetssdpath", aliases=("target", "destination", "dest")
+
+    # TargetSSDPath is required in the template, but cards often use TargetSDPath
+    # (one "S") or omit it. Accept common aliases, then default under ~/Games.
+    target = _optional_str(
+        normalized,
+        "targetssdpath",
+        aliases=(
+            "targetsdpath",  # common typo / TargetSDPath
+            "targetssd",
+            "targetpath",
+            "ssdpath",
+            "installpath",
+            "installdir",
+            "target",
+            "destination",
+            "destinationpath",
+            "dest",
+            "path",
+        ),
     )
+    if not target:
+        target = _default_target_ssd_path(game_name)
 
     game_folder = str(
         normalized.get("gamefolder")
@@ -202,7 +221,23 @@ def _norm_key(key: Any) -> str:
     return str(key).strip().lower().replace("_", "").replace("-", "").replace(" ", "")
 
 
-def _require_str(
+def _sanitize_game_dir_name(game_name: str) -> str:
+    cleaned = "".join(
+        ch if ch.isalnum() or ch in {" ", "-", "_"} else " " for ch in game_name
+    )
+    cleaned = "_".join(cleaned.split())
+    return cleaned.strip("._") or "Game"
+
+
+def _default_target_ssd_path(game_name: str) -> str:
+    """Fallback when TargetSSDPath is missing: /home/deck/Games/<GameName>."""
+    from .steam_paths import decky_user_home
+
+    home = decky_user_home()
+    return str((home / "Games" / _sanitize_game_dir_name(game_name)).resolve())
+
+
+def _optional_str(
     data: Dict[str, Any],
     key: str,
     *,
@@ -217,8 +252,23 @@ def _require_str(
     if isinstance(value, (int, float)):
         value = str(value)
     if not isinstance(value, str) or not value.strip():
-        raise GameInfoError(
-            f"missing required field '{key}' (also accepted: {', '.join(aliases) or 'n/a'}). "
-            "Required fields: GameName, ExePath, TargetSSDPath."
-        )
+        return ""
     return value.strip()
+
+
+def _require_str(
+    data: Dict[str, Any],
+    key: str,
+    *,
+    aliases: tuple[str, ...] = (),
+) -> str:
+    value = _optional_str(data, key, aliases=aliases)
+    if not value:
+        found = ", ".join(sorted(data.keys())) or "(none)"
+        raise GameInfoError(
+            f"missing required field '{key}' "
+            f"(also accepted: {', '.join(aliases) or 'n/a'}). "
+            "Required fields: GameName, ExePath, TargetSSDPath. "
+            f"Keys found in game_info.json: {found}"
+        )
+    return value

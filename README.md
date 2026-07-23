@@ -1,6 +1,6 @@
 # Physical Media Launcher
 
-**Version 1.0.0** — Decky Loader plugin for Steam Deck that detects game SD cards / USB drives, copies the game folder to the internal SSD when needed, registers a Non-Steam Steam shortcut, and optionally launches it.
+**Version 1.0.1** — Decky Loader plugin for Steam Deck that detects game SD cards / USB drives, copies the game folder to the internal SSD when needed, registers a Non-Steam Steam shortcut, and optionally launches it.
 
 Use this with games you own and are allowed to copy (for example GOG / itch / DRM-free Windows builds). The plugin supports Proton-friendly launch options for Windows executables added as Non-Steam shortcuts.
 
@@ -69,7 +69,7 @@ Place this file on the **root** of the removable volume:
 | --- | --- | --- |
 | `GameName` | yes | Shortcut name shown in Steam |
 | `ExePath` | yes | Executable path relative to the game folder |
-| `TargetSSDPath` | yes | Absolute destination on internal storage |
+| `TargetSSDPath` | no* | Absolute destination on internal storage. Also accepts `TargetSDPath`. If omitted, defaults to `/home/deck/Games/<GameName>`. |
 | `LaunchOptions` | no | Steam launch options (`%command%` supported) |
 | `GameFolder` | no | Folder on the card containing the game (default: card root) |
 | `StartDir` | no | Working directory relative to `TargetSSDPath` |
