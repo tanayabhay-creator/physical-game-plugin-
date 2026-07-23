@@ -7,7 +7,7 @@ USER_NAME="$(id -un)"
 HOME_DIR="${HOME:-/home/deck}"
 PLUGINS_DIR="${HOME_DIR}/homebrew/plugins"
 TARGET="${PLUGINS_DIR}/PhysicalMediaLauncher"
-BRANCH="${PML_BRANCH:-v1.0.0}"
+BRANCH="${PML_BRANCH:-v1.0.1}"
 REPO_URL="https://github.com/tanayabhay-creator/physical-game-plugin-.git"
 WORK="/tmp/pml-hard-${USER_NAME}-$$"
 
