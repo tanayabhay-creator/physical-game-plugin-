@@ -36,6 +36,40 @@ const startTransfer = callable<[mount_path: string, force_recopy: boolean], Plug
   "start_transfer"
 );
 const resetBusy = callable<[], PluginStatus>("reset_busy");
+const previewGameInfo = callable<
+  [mount_path: string],
+  PluginStatus & {
+    ok?: boolean;
+    error?: string;
+    suggestion?: {
+      mount: string;
+      game_name: string;
+      game_folder: string;
+      exe_path: string;
+      target_ssd_path: string;
+      confidence: string;
+      notes: string;
+      existing_info: boolean;
+      candidates: string[];
+    };
+  }
+>("preview_game_info");
+const generateGameInfo = callable<
+  [mount_path: string, overwrite: boolean],
+  PluginStatus & {
+    ok?: boolean;
+    error?: string;
+    result?: {
+      written_path?: string;
+      game_name?: string;
+      game_folder?: string;
+      exe_path?: string;
+      target_ssd_path?: string;
+      confidence?: string;
+      notes?: string;
+    };
+  }
+>("generate_game_info");
 const reportSteamAppId = callable<
   [game_name: string, exe: string, app_id: number],
   PluginStatus
@@ -150,7 +184,7 @@ function Content() {
         body = `Detected ${gameMounts.length} game card(s). Press Start Transfer to copy.`;
       } else if (allMounts.length > 0) {
         body =
-          `SD/USB is mounted (${allMounts.length}), but game_info.json is missing from the card root.`;
+          `SD/USB is mounted (${allMounts.length}), but game_info.json is missing. Use Generate game_info.json on SD.`;
       } else {
         body =
           "No SD/USB mounts found under /run/media/deck. Insert the card and wait for SteamOS to mount it.";
@@ -350,6 +384,67 @@ function Content() {
     }
   };
 
+  const onGenerateGameInfo = async (overwrite: boolean) => {
+    try {
+      const mount =
+        (state.detected_mounts && state.detected_mounts[0]) || state.last_mount || "";
+
+      if (!overwrite) {
+        const preview = await previewGameInfo(mount);
+        setState(preview);
+        if (!preview.ok || !preview.suggestion) {
+          toaster.toast({
+            title: "Could not generate JSON",
+            body: preview.error || preview.last_error || "No game layout found on the card.",
+          });
+          return;
+        }
+        const s = preview.suggestion;
+        if (s.existing_info) {
+          toaster.toast({
+            title: "game_info.json already exists",
+            body: `Found ${s.game_name}. Use Overwrite to replace it, or Start Transfer if it is already correct.`,
+          });
+          return;
+        }
+      }
+
+      toaster.toast({
+        title: "Physical Media Launcher",
+        body: overwrite
+          ? "Overwriting game_info.json on the SD card…"
+          : "Scanning SD card and writing game_info.json…",
+      });
+      const next = await generateGameInfo(mount, overwrite);
+      setState(next);
+      if (!next.ok) {
+        toaster.toast({
+          title: "Generate failed",
+          body: next.error || next.last_error || "Could not write game_info.json",
+        });
+        return;
+      }
+      const r = next.result;
+      toaster.toast({
+        title: "game_info.json created",
+        body: r
+          ? `${r.game_name}: ${r.game_folder || "(root)"}/${r.exe_path}`
+          : "File written on the SD card. Press Start Transfer.",
+      });
+      // Refresh detection so Start Transfer sees the new file.
+      try {
+        setState(await rescanMedia());
+      } catch (err) {
+        console.warn("rescan after generate failed", err);
+      }
+    } catch (err) {
+      toaster.toast({
+        title: "Generate failed",
+        body: String(err),
+      });
+    }
+  };
+
   const onClearLog = async () => {
     try {
       setState(await clearLog());
@@ -393,7 +488,7 @@ function Content() {
 
         <PanelSectionRow>
           <Field label="Plugin build">
-            {state.plugin_build || "unknown — please update"}
+            {state.plugin_build || "unknown — reinstall v1.0.4 + restart Decky"}
           </Field>
         </PanelSectionRow>
 
@@ -488,6 +583,27 @@ function Content() {
             </Field>
           </PanelSectionRow>
         )}
+      </PanelSection>
+
+      <PanelSection title="Setup card">
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={transferLocked}
+            onClick={() => void onGenerateGameInfo(false)}
+          >
+            Generate game_info.json on SD
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            disabled={transferLocked}
+            onClick={() => void onGenerateGameInfo(true)}
+          >
+            Overwrite game_info.json on SD
+          </ButtonItem>
+        </PanelSectionRow>
       </PanelSection>
 
       <PanelSection title="Transfer">

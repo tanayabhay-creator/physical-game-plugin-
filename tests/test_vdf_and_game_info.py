@@ -111,6 +111,96 @@ class GameInfoTests(unittest.TestCase):
             info2 = load_game_info(root)
             self.assertTrue(info2.target_ssd_path.endswith("/Games/My_Cool_Game"))
 
+    def test_gamefolder_case_insensitive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "GameFiles"
+            folder.mkdir()
+            (folder / "Silksong.exe").write_bytes(b"MZ")
+            (root / "game_info.json").write_text(
+                json.dumps(
+                    {
+                        "GameName": "Silksong",
+                        "GameFolder": "gamefiles",
+                        "ExePath": "silksong.exe",
+                        "TargetSSDPath": "/home/deck/Games/Silksong",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            info = load_game_info(root)
+            self.assertEqual(info.game_folder, "GameFiles")
+            self.assertEqual(info.exe_path, "Silksong.exe")
+            self.assertTrue(info.source_exe.is_file())
+
+    def test_gamefolder_double_nested_with_exepath(self) -> None:
+        """GameFolder + ExePath both include GameFiles — recover to one nesting."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "GameFiles"
+            folder.mkdir()
+            (folder / "Silksong.exe").write_bytes(b"MZ")
+            (root / "game_info.json").write_text(
+                json.dumps(
+                    {
+                        "GameName": "Silksong",
+                        "GameFolder": "GameFiles",
+                        "ExePath": "GameFiles/Silksong.exe",
+                        "TargetSSDPath": "/home/deck/Games/Silksong",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            info = load_game_info(root)
+            self.assertTrue(info.source_exe.is_file())
+            self.assertTrue(
+                info.game_folder in {"", "GameFiles"}
+            )
+            # Either root+GameFiles/exe or GameFiles+exe is fine.
+            self.assertTrue(str(info.source_exe).endswith("Silksong.exe"))
+
+    def test_wrong_gamefolder_recovers_via_exe_search(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "GameFiles"
+            folder.mkdir()
+            (folder / "HollowKnight.exe").write_bytes(b"MZ")
+            (root / "game_info.json").write_text(
+                json.dumps(
+                    {
+                        "GameName": "HK",
+                        "GameFolder": "games/DoesNotExist",
+                        "ExePath": "HollowKnight.exe",
+                        "TargetSSDPath": "/home/deck/Games/HK",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            info = load_game_info(root)
+            self.assertTrue(info.source_exe.is_file())
+            self.assertTrue(info.source_game_dir.is_dir())
+
+    def test_windows_absolute_gamefolder_stripped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "payload"
+            folder.mkdir()
+            (folder / "game.exe").write_bytes(b"MZ")
+            (root / "game_info.json").write_text(
+                json.dumps(
+                    {
+                        "GameName": "Demo",
+                        "GameFolder": "E:\\\\payload",
+                        "ExePath": "game.exe",
+                        "TargetSSDPath": "/home/deck/Games/Demo",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            info = load_game_info(root)
+            self.assertEqual(info.game_folder, "payload")
+            self.assertTrue(info.source_exe.is_file())
+
 
 class ShortcutTests(unittest.TestCase):
     def test_appid_helpers(self) -> None:
