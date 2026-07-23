@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.3
+
+- **Generate game_info.json on SD** from the plugin UI (scans the card for the game folder + `.exe`)
+- **Overwrite game_info.json on SD** when you want to rebuild metadata
+- Accept `TargetInstallPath` as an alias for `TargetSSDPath`
+- Includes 1.0.2 GameFolder resolution fixes (case, double nesting, wrong folder recovery)
+
 ## 1.0.2
 
 - Fix **GameFolder not found on SD card** when the game is still detected
@@ -27,4 +34,4 @@ First stable release of **Physical Media Launcher** for Steam Deck (Decky Loader
 - Manual controls: Start Transfer, Force Re-Copy, Launch last game, Add/Fix shortcut, Open in Library
 
 ### Install
-See the [v1.0.2 release](https://github.com/tanayabhay-creator/physical-game-plugin-/releases/tag/v1.0.2) or README.
+See the [v1.0.3 release](https://github.com/tanayabhay-creator/physical-game-plugin-/releases/tag/v1.0.3) or README.

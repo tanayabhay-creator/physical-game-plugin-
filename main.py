@@ -21,12 +21,18 @@ PLUGIN_DIR = Path(getattr(decky, "DECKY_PLUGIN_DIR", Path(__file__).resolve().pa
 if str(PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(PLUGIN_DIR))
 
-from backend.game_info import (
+from backend.game_info import (  # noqa: E402
     GameInfoError,
     describe_mount_layout,
     find_game_info,
     load_game_info,
-)  # noqa: E402
+)
+from backend.game_info_generator import (  # noqa: E402
+    GameInfoGenerateError,
+    pick_mount_for_generate,
+    suggest_game_info,
+    write_game_info,
+)
 from backend.launcher import notify, launch_steam_app  # noqa: E402
 from backend.compat_tools import set_compat_tool_mapping  # noqa: E402
 from backend.media_watcher import MediaWatcher  # noqa: E402
@@ -123,7 +129,7 @@ class Plugin:
             "last_steam_app_id": steam_app_id,
             "last_vdf_launch_id": vdf_launch_id,
             "last_shortcut_appid": shortcut_appid,
-            "plugin_build": "1.0.2",
+            "plugin_build": "1.0.3",
             "log_lines": [str(x) for x in list(s.log_lines[-50:])],
             "busy": bool(self._busy),
             "detected_mounts": [str(x) for x in detected],
@@ -256,6 +262,98 @@ class Plugin:
             "all_mounts": all_mounts,
             **(await self.get_status()),
         }
+
+    async def preview_game_info(self, mount_path: str = "") -> Dict[str, Any]:
+        """Scan an inserted SD/USB card and suggest game_info.json fields."""
+        try:
+            mounts = list_removable_mounts()
+            mount = pick_mount_for_generate(mounts, preferred=str(mount_path or ""))
+            if mount is None:
+                msg = (
+                    "No SD/USB mounted under /run/media/deck. "
+                    "Insert a card in Desktop or Game Mode, then try again."
+                )
+                self._store.update(last_error=msg)
+                await self._log(msg)
+                return {"ok": False, "error": msg, **(await self.get_status())}
+
+            suggestion = suggest_game_info(mount)
+            await self._log(
+                f"Preview game_info on {mount}: {suggestion.game_name} / "
+                f"{suggestion.game_folder or '.'}/{suggestion.exe_path} "
+                f"({suggestion.confidence})"
+            )
+            self._store.update(last_mount=str(mount), last_error="")
+            return {
+                "ok": True,
+                "suggestion": suggestion.to_dict(),
+                **(await self.get_status()),
+            }
+        except GameInfoGenerateError as exc:
+            msg = str(exc)
+            self._store.update(last_error=msg)
+            await self._log(f"preview_game_info: {msg}")
+            return {"ok": False, "error": msg, **(await self.get_status())}
+        except Exception as exc:  # noqa: BLE001
+            msg = f"{type(exc).__name__}: {exc}"
+            logger.exception("preview_game_info failed")
+            self._store.update(last_error=msg)
+            return {"ok": False, "error": msg, **(await self.get_status())}
+
+    async def generate_game_info(
+        self,
+        mount_path: str = "",
+        overwrite: bool = False,
+    ) -> Dict[str, Any]:
+        """Create game_info.json on an inserted card from auto-detected layout."""
+        try:
+            mounts = list_removable_mounts()
+            mount = pick_mount_for_generate(mounts, preferred=str(mount_path or ""))
+            if mount is None:
+                msg = (
+                    "No SD/USB mounted under /run/media/deck. "
+                    "Insert a card, wait for it to mount, then try again."
+                )
+                self._store.update(last_error=msg)
+                await self._log(msg)
+                return {"ok": False, "error": msg, **(await self.get_status())}
+
+            result = write_game_info(mount, overwrite=bool(overwrite))
+            await self._log(
+                f"Wrote game_info.json on {result.get('written_path')}: "
+                f"{result.get('game_name')} → {result.get('game_folder')}/"
+                f"{result.get('exe_path')}"
+            )
+            self._store.update(
+                last_mount=str(mount),
+                last_game=str(result.get("game_name") or ""),
+                last_error="",
+            )
+            await self._set_status(
+                f"Wrote game_info.json for {result.get('game_name')}",
+                progress=0.0,
+            )
+            await notify(
+                "Physical Media Launcher",
+                f"Created game_info.json for {result.get('game_name')}",
+            )
+            return {
+                "ok": True,
+                "result": result,
+                **(await self.get_status()),
+            }
+        except GameInfoGenerateError as exc:
+            msg = str(exc)
+            self._store.update(last_error=msg)
+            await self._log(f"generate_game_info: {msg}")
+            await self._set_status("Error", progress=0.0)
+            return {"ok": False, "error": msg, **(await self.get_status())}
+        except Exception as exc:  # noqa: BLE001
+            msg = f"{type(exc).__name__}: {exc}"
+            logger.exception("generate_game_info failed")
+            self._store.update(last_error=msg)
+            await self._set_status("Error", progress=0.0)
+            return {"ok": False, "error": msg, **(await self.get_status())}
 
     async def start_transfer(
         self,
@@ -612,7 +710,7 @@ class Plugin:
                     if saved_app_id not in {"", "0"}
                     else "0"
                 ),
-                plugin_build="1.0.2",
+                plugin_build="1.0.3",
             )
 
             steam_payload = {

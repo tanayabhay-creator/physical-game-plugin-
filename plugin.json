@@ -1,7 +1,7 @@
 {
   "name": "Physical Media Launcher",
   "author": "Physical Media Launcher Contributors",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "flags": ["_root"],
   "api_version": 1,
   "publish": {

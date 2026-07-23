@@ -574,6 +574,8 @@ const clearLog = callable("clear_log");
 const rescanMedia = callable("rescan_media");
 const startTransfer = callable("start_transfer");
 const resetBusy = callable("reset_busy");
+const previewGameInfo = callable("preview_game_info");
+const generateGameInfo = callable("generate_game_info");
 const reportSteamAppId = callable("report_steam_appid");
 /** Deduplicate launches within this Game Mode session. */
 let lastFrontendLaunchAppId = "";
@@ -672,7 +674,7 @@ function Content() {
             }
             else if (allMounts.length > 0) {
                 body =
-                    `SD/USB is mounted (${allMounts.length}), but game_info.json is missing from the card root.`;
+                    `SD/USB is mounted (${allMounts.length}), but game_info.json is missing. Use Generate game_info.json on SD.`;
             }
             else {
                 body =
@@ -863,6 +865,65 @@ function Content() {
             console.error(err);
         }
     };
+    const onGenerateGameInfo = async (overwrite) => {
+        try {
+            const mount = (state.detected_mounts && state.detected_mounts[0]) || state.last_mount || "";
+            if (!overwrite) {
+                const preview = await previewGameInfo(mount);
+                setState(preview);
+                if (!preview.ok || !preview.suggestion) {
+                    toaster.toast({
+                        title: "Could not generate JSON",
+                        body: preview.error || preview.last_error || "No game layout found on the card.",
+                    });
+                    return;
+                }
+                const s = preview.suggestion;
+                if (s.existing_info) {
+                    toaster.toast({
+                        title: "game_info.json already exists",
+                        body: `Found ${s.game_name}. Use Overwrite to replace it, or Start Transfer if it is already correct.`,
+                    });
+                    return;
+                }
+            }
+            toaster.toast({
+                title: "Physical Media Launcher",
+                body: overwrite
+                    ? "Overwriting game_info.json on the SD card…"
+                    : "Scanning SD card and writing game_info.json…",
+            });
+            const next = await generateGameInfo(mount, overwrite);
+            setState(next);
+            if (!next.ok) {
+                toaster.toast({
+                    title: "Generate failed",
+                    body: next.error || next.last_error || "Could not write game_info.json",
+                });
+                return;
+            }
+            const r = next.result;
+            toaster.toast({
+                title: "game_info.json created",
+                body: r
+                    ? `${r.game_name}: ${r.game_folder || "(root)"}/${r.exe_path}`
+                    : "File written on the SD card. Press Start Transfer.",
+            });
+            // Refresh detection so Start Transfer sees the new file.
+            try {
+                setState(await rescanMedia());
+            }
+            catch (err) {
+                console.warn("rescan after generate failed", err);
+            }
+        }
+        catch (err) {
+            toaster.toast({
+                title: "Generate failed",
+                body: String(err),
+            });
+        }
+    };
     const onClearLog = async () => {
         try {
             setState(await clearLog());
@@ -899,7 +960,7 @@ function Content() {
                                         overflow: "hidden",
                                         textOverflow: "ellipsis",
                                         whiteSpace: "nowrap",
-                                    }, children: state.progress_message }) }) })) : null] })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Transfer", description: "Press Start Transfer after a game card is detected.", children: "Idle" }) })) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Transfer", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(false), children: transferLocked ? "Transfer in progress…" : "Start Transfer (SD → SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(true), children: "Force Re-Copy (overwrite SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onLaunchLast(), children: "Launch last game now" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onOpenInLibrary(), children: "Open game in Library (then press Play)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onFixSteamShortcut(), children: "Add / Fix Non-Steam shortcut" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onRescan(), children: "Rescan inserted media" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onResetBusy(), children: "Reset stuck transfer state" }) })] }), SP_JSX.jsx(DFL.PanelSection, { title: "Auto-Launch", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Enable Auto-Launch on Insertion", description: "When ON, reinserting the SD card launches the game automatically (plugin toggle overrides game_info.json AutoLaunch).", checked: state.auto_launch, onChange: (checked) => {
+                                    }, children: state.progress_message }) }) })) : null] })) : (SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.Field, { label: "Transfer", description: "Press Start Transfer after a game card is detected.", children: "Idle" }) })) }), SP_JSX.jsxs(DFL.PanelSection, { title: "Setup card", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onGenerateGameInfo(false), children: "Generate game_info.json on SD" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onGenerateGameInfo(true), children: "Overwrite game_info.json on SD" }) })] }), SP_JSX.jsxs(DFL.PanelSection, { title: "Transfer", children: [SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(false), children: transferLocked ? "Transfer in progress…" : "Start Transfer (SD → SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", disabled: transferLocked, onClick: () => void onStartTransfer(true), children: "Force Re-Copy (overwrite SSD)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onLaunchLast(), children: "Launch last game now" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onOpenInLibrary(), children: "Open game in Library (then press Play)" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onFixSteamShortcut(), children: "Add / Fix Non-Steam shortcut" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onRescan(), children: "Rescan inserted media" }) }), SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onResetBusy(), children: "Reset stuck transfer state" }) })] }), SP_JSX.jsx(DFL.PanelSection, { title: "Auto-Launch", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ToggleField, { label: "Enable Auto-Launch on Insertion", description: "When ON, reinserting the SD card launches the game automatically (plugin toggle overrides game_info.json AutoLaunch).", checked: state.auto_launch, onChange: (checked) => {
                             void onToggleAutoLaunch(checked);
                         } }) }) }), SP_JSX.jsx(DFL.PanelSection, { title: "Actions", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx(DFL.ButtonItem, { layout: "below", onClick: () => void onClearLog(), children: "Clear log" }) }) }), SP_JSX.jsx(DFL.PanelSection, { title: "Log", children: SP_JSX.jsx(DFL.PanelSectionRow, { children: SP_JSX.jsx("pre", { style: {
                             width: "100%",

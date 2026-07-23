@@ -183,6 +183,7 @@ def load_game_info(mount_root: Path) -> GameInfo:
             "ssdpath",
             "installpath",
             "installdir",
+            "targetinstallpath",  # common alternate name
             "target",
             "destination",
             "destinationpath",
