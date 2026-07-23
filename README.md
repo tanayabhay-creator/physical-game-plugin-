@@ -1,6 +1,6 @@
 # Physical Media Launcher
 
-**Version 1.0.1** — Decky Loader plugin for Steam Deck that detects game SD cards / USB drives, copies the game folder to the internal SSD when needed, registers a Non-Steam Steam shortcut, and optionally launches it.
+**Version 1.0.2** — Decky Loader plugin for Steam Deck that detects game SD cards / USB drives, copies the game folder to the internal SSD when needed, registers a Non-Steam Steam shortcut, and optionally launches it.
 
 Use this with games you own and are allowed to copy (for example GOG / itch / DRM-free Windows builds). The plugin supports Proton-friendly launch options for Windows executables added as Non-Steam shortcuts.
 
@@ -71,7 +71,7 @@ Place this file on the **root** of the removable volume:
 | `ExePath` | yes | Executable path relative to the game folder |
 | `TargetSSDPath` | no* | Absolute destination on internal storage. Also accepts `TargetSDPath`. If omitted, defaults to `/home/deck/Games/<GameName>`. |
 | `LaunchOptions` | no | Steam launch options (`%command%` supported) |
-| `GameFolder` | no | Folder on the card containing the game (default: card root) |
+| `GameFolder` | no | Folder on the card containing the game (default: card root). Case-insensitive; wrong/missing names are recovered when the exe can still be found. |
 | `StartDir` | no | Working directory relative to `TargetSSDPath` |
 | `CompatTool` | no | Optional Proton/compat hint for Windows exes |
 | `AutoLaunch` | no | Per-card override for auto-launch |
@@ -87,14 +87,14 @@ See [`example/game_info.json`](example/game_info.json).
 
 ## Install / update on Steam Deck (Konsole)
 
-### Recommended (v1.0.0 hard reinstall)
+### Recommended (v1.0.2 hard reinstall)
 
 ```bash
 cd /tmp
 sudo chown -R deck:deck /home/deck/homebrew /home/deck/Downloads /home/deck/Games
 sudo rm -rf /tmp/pml-get /tmp/pml-hard-* /tmp/pml-work-deck-*
 mkdir -p /tmp/pml-get && cd /tmp/pml-get
-git clone --branch v1.0.0 --single-branch https://github.com/tanayabhay-creator/physical-game-plugin-.git repo
+git clone --branch v1.0.2 --single-branch https://github.com/tanayabhay-creator/physical-game-plugin-.git repo
 bash repo/hard-reinstall-on-deck.sh
 ```
 

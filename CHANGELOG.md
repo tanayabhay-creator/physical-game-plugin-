@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.2
+
+- Fix **GameFolder not found on SD card** when the game is still detected
+- Resolve `GameFolder` / `ExePath` case-insensitively
+- Recover from common card mistakes: double-nested `GameFolder`+`ExePath`, wrong folder name, Windows drive paths
+- Search the card for the executable when `GameFolder` is wrong
+- Clearer errors that list what is actually on the card root
+
 ## 1.0.1
 
 - Accept `TargetSDPath` and other common aliases for the SSD destination field
@@ -19,4 +27,4 @@ First stable release of **Physical Media Launcher** for Steam Deck (Decky Loader
 - Manual controls: Start Transfer, Force Re-Copy, Launch last game, Add/Fix shortcut, Open in Library
 
 ### Install
-See the [v1.0.1 release](https://github.com/tanayabhay-creator/physical-game-plugin-/releases/tag/v1.0.1) or README.
+See the [v1.0.2 release](https://github.com/tanayabhay-creator/physical-game-plugin-/releases/tag/v1.0.2) or README.
