@@ -21,7 +21,12 @@ PLUGIN_DIR = Path(getattr(decky, "DECKY_PLUGIN_DIR", Path(__file__).resolve().pa
 if str(PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(PLUGIN_DIR))
 
-from backend.game_info import GameInfoError, find_game_info, load_game_info  # noqa: E402
+from backend.game_info import (
+    GameInfoError,
+    describe_mount_layout,
+    find_game_info,
+    load_game_info,
+)  # noqa: E402
 from backend.launcher import notify, launch_steam_app  # noqa: E402
 from backend.compat_tools import set_compat_tool_mapping  # noqa: E402
 from backend.media_watcher import MediaWatcher  # noqa: E402
@@ -118,7 +123,7 @@ class Plugin:
             "last_steam_app_id": steam_app_id,
             "last_vdf_launch_id": vdf_launch_id,
             "last_shortcut_appid": shortcut_appid,
-            "plugin_build": "1.0.1",
+            "plugin_build": "1.0.2",
             "log_lines": [str(x) for x in list(s.log_lines[-50:])],
             "busy": bool(self._busy),
             "detected_mounts": [str(x) for x in detected],
@@ -313,9 +318,12 @@ class Plugin:
                 return await self.get_status()
 
             if not info.source_game_dir.is_dir():
+                layout = describe_mount_layout(mount)
                 msg = (
-                    f"GameFolder not found on SD: {info.source_game_dir}. "
-                    "Fix GameFolder in game_info.json."
+                    f"GameFolder not found on SD: {info.source_game_dir} "
+                    f"(GameFolder={info.game_folder!r}). "
+                    f"Card root contains: {layout}. "
+                    "Fix GameFolder or leave it empty if ExePath is relative to the card root."
                 )
                 self._store.update(last_error=msg)
                 await self._set_status("Error", progress=0.0)
@@ -323,9 +331,11 @@ class Plugin:
                 return await self.get_status()
 
             if not info.source_exe.is_file():
+                layout = describe_mount_layout(info.source_game_dir)
                 msg = (
                     f"Exe not found on SD: {info.source_exe}. "
-                    "Fix ExePath in game_info.json (relative to GameFolder)."
+                    f"ExePath={info.exe_path!r} under GameFolder={info.game_folder!r}. "
+                    f"That folder contains: {layout}."
                 )
                 self._store.update(last_error=msg)
                 await self._set_status("Error", progress=0.0)
@@ -466,15 +476,21 @@ class Plugin:
             )
 
             if not source_dir.is_dir():
+                layout = describe_mount_layout(mount)
                 raise FileNotFoundError(
-                    f"GameFolder not found on SD card: {source_dir}. "
-                    f"Check GameFolder in game_info.json."
+                    f"GameFolder not found on SD card: {source_dir} "
+                    f"(GameFolder={info.game_folder!r}). "
+                    f"Card root contains: {layout}. "
+                    f"Fix GameFolder in game_info.json, or leave it empty if "
+                    f"ExePath is relative to the card root."
                 )
             if not source_exe.is_file():
-                # Helpful listing for common ExePath mistakes.
+                layout = describe_mount_layout(source_dir)
                 raise FileNotFoundError(
                     f"Source executable not found on media: {source_exe}. "
-                    f"Check ExePath in game_info.json (path must be relative to GameFolder)."
+                    f"ExePath={info.exe_path!r} must be relative to GameFolder "
+                    f"({info.game_folder!r or 'card root'}). "
+                    f"That folder contains: {layout}."
                 )
 
             already = destination_ready(dest, exe_rel)
@@ -596,7 +612,7 @@ class Plugin:
                     if saved_app_id not in {"", "0"}
                     else "0"
                 ),
-                plugin_build="1.0.1",
+                plugin_build="1.0.2",
             )
 
             steam_payload = {
